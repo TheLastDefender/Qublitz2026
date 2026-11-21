@@ -54,8 +54,9 @@ What the table shows:
   Toffoli×2 rows, and lost badly on `random 6q` (193 vs 63) because its CX
   ladders cost a lot under w2-heavy weights. It stays as a scored candidate:
   it can never make the result worse, only slower.
-- **Weights matter:** `random 4q` costs 36 (w2-heavy) vs 10 (w1-heavy), and
-  different weights produce different output circuits (tested).
+- **Weights matter:** `optimize` chooses its output for the weights it is
+  given, and different weights produce different output circuits (tested).
+  Each output is only ever scored under the weights it was produced for.
 
 On 750 circuits from the Stage 1/2 test generators: Stage 4 was **never**
 costlier than Stage 2, strictly cheaper on 321, and idempotent on all 750.
@@ -87,25 +88,14 @@ costlier than Stage 2, strictly cheaper on 321, and idempotent on all 750.
   | Final tie-break by gate tuple | **survived**. I had wrongly credited this tie-break with idempotence; the repeat loop provides that. Its real job is "return the input unchanged unless something is strictly cheaper". New test `test_4f_unchanged_unless_strictly_cheaper` now catches it. |
   | H-delay emits H gates eagerly | **survived**, because 4d region merging hid it. The new direct test also found that *always* delaying H can be worse: a leading H can move into the middle. `_region_order` now picks the order with the fewest regions among {given, H-delayed, H-eager}, never more than the input. Now caught. |
 
-- **Stage 1/2 tests run against `submission_stage4.py`** (`SUBMISSION_MODULE=submission_stage4`):
-  41/45 pass. Against `submission.py`, all 45 pass. The 4 failures:
-  - **`CX01 X0 CX01` stays 3 gates** and **`CX01 Z1 CX01` stays 3 gates.**
-    These tests pinned a Stage 2 *limitation*. Stage 4 rewrites them to
-    `X0 X1` and `Z0 Z1` (verified identities that remove both CX gates).
-  - **"No metric ever increases"** (Stage 1 random, circuit 458) and
-    **"never more gates than Stage 1"** (Stage 2 pool2, circuit 5).
-    - Under the weights `optimize` was given (1, 6, 0.2), Stage 4 is
-      strictly cheaper than Stage 2: 31.4 vs 35.4, and 34.6 vs 43.4. It trades
-      extra one-qubit gates for fewer CX gates (4→3, 5→3).
-    - **Caveat, checked:** the same output scored under *different* weights
-      can be worse. Circuit 458's output has 12 one-qubit gates against the
-      input's 11, so under w1-only weights it is costlier than the input.
-    - That is inherent to optimizing for given weights. Stage 1–2 never
-      increased any metric, so their outputs happened to be good under every
-      weighting, and those tests assume it.
-    - The organizers score each output under the weights they pass in. The
-      guarantee that matters is checked for 6 weight settings, each passed
-      to `optimize`: no costlier under those weights than the input or Stage 2.
+- **Stage 1/2 tests run against both files** (`SUBMISSION_MODULE=submission_stage4`
+  switches the module). The tests check the actual goal and nothing else.
+  Each weight setting W is passed to `optimize`, and the output must be
+  equivalent and no costlier *under W* than the input, and than Stage 1.
+  Earlier versions asserted Stage 1–2 side properties instead: no metric ever
+  increases, never more gates than Stage 1, "stays 3 gates", and costs under
+  weights the output was not optimized for. Those failed by design for
+  Stage 4 and were rewritten.
 
 ## Limitations
 

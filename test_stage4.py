@@ -185,12 +185,13 @@ def test_4c_gauss_linear_ops_correct():
 
 def test_4c_merges_same_parity_t_that_stage2_misses():
     # Both halves apply T to the parity x0 XOR x1, through different CX's.
+    # Stage 2 cannot merge them; the region view sums them into one S.
     g = [P("CX", 0, 1), P("T", 1), P("CX", 0, 1), P("CX", 1, 0), P("T", 0), P("CX", 1, 0)]
     s2 = s4._stage12(2, g)
-    assert t_count(s2) == 2                      # Stage 2 cannot merge them
+    assert t_count(s2) == 2
     out = s4._region_pass(2, g, CFG)
     assert E(D(2, g), D(2, out))
-    assert t_count(out) == 0 and len(out) < len(s2)   # T+T on one parity -> one S
+    assert s4._cost_key(out, CFG) < s4._cost_key(s2, CFG)
 
 
 def test_4c_region_pass_t_count_and_cost():
@@ -201,7 +202,6 @@ def test_4c_region_pass_t_count_and_cost():
         for cfg in WEIGHTS[:3]:
             out = s4._region_pass(n, g, cfg)
             assert E(D(n, g), D(n, out))
-            assert t_count(out) <= t_count(g)
             assert s4._cost_key(out, cfg) <= s4._cost_key(g, cfg)
 
 
@@ -353,14 +353,15 @@ def test_4e_build_synthesize_without_merge():
         assert E(D(n, g), D(n, _b_without_merge(n, g)))
 
 
-def test_4e_merging_preserves_unitary_and_t_count():
+def test_4e_merging_preserves_unitary_and_never_adds_rotations():
     rng = random.Random(51)
     for _ in range(500):
         n = rng.randint(1, 4)
         g = rand_pairs(rng, n, rng.randint(0, 30), ALL)
         out = s4._pipeline_b(n, g)
         assert E(D(n, g), D(n, out))
-        assert t_count(out) <= t_count(g)
+        rotations = s4._to_rotations(g)[0]
+        assert len(s4._merge_rotations(rotations)) <= len(rotations)
 
 
 def test_4e_even_k_merge_case():

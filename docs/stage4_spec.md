@@ -332,10 +332,9 @@ optimize(circuit, config):
   repeat-the-selection-until-nothing-changes loop: the second call starts
   from a fixed point. (It holds unless the `MAX_ROUNDS` budget runs out.)
 - On a cost tie, the input is returned unchanged (keep-current tie-break).
-- All Stage 1 and Stage 2 tests still pass. (As implemented: 41/45 pass against
-  `submission_stage4.py`. The 4 failures assert Stage 1–2 properties, such as
-  "no metric increases", that weighted-cost selection deliberately gives up.
-  See `docs/stage4.md`.)
+- All Stage 1 and Stage 2 tests pass against both files. Those tests check
+  only the goal: called with weights W, the output is equivalent and no
+  costlier under W.
 - Inputs are unchanged, and the output format is valid.
 
 ---

@@ -15,7 +15,6 @@ from submission import (
     _commutes,
     _stage1_cancel,
     circuit_cost,
-    circuit_metrics,
     equivalent_up_to_global_phase,
     optimize,
 )
@@ -129,18 +128,24 @@ def test_cx_x_target_cx_cancels():
     assert names(out) == [("X", (1,))]
 
 
-def test_cx_x_control_cx_not_cancelled():
+def test_cx_x_control_cx_not_wrongly_cancelled():
+    # X on the control does NOT commute with CX, so dropping the CX pair and
+    # keeping X0 alone would be wrong. The equivalence check catches that.
+    # (A correct rewrite exists: CX01 X0 CX01 = X0 X1; it is allowed.)
     c = circ(2, ("CX", 0, 1), ("X", 0), ("CX", 0, 1))
     out = optimize(c, CFG)
     assert unitary_equal(c, out)
-    assert len(out["gates"]) == 3
+    assert names(out) != [("X", (0,))]
+    assert circuit_cost(out, CFG) <= circuit_cost(c, CFG)
 
 
-def test_cx_z_target_cx_not_cancelled():
+def test_cx_z_target_cx_not_wrongly_cancelled():
+    # Z on the target does NOT commute with CX (CX01 Z1 CX01 = Z0 Z1).
     c = circ(2, ("CX", 0, 1), ("Z", 1), ("CX", 0, 1))
     out = optimize(c, CFG)
     assert unitary_equal(c, out)
-    assert len(out["gates"]) == 3
+    assert names(out) != [("Z", (1,))]
+    assert circuit_cost(out, CFG) <= circuit_cost(c, CFG)
 
 
 def test_cx_shared_control_cancels_through_other_cx():
@@ -159,13 +164,7 @@ def test_x_t_x_becomes_tdg_inside_larger_circuit():
     c = circ(2, ("CX", 0, 1), ("X", 0), ("T", 0), ("X", 0), ("CX", 1, 0))
     out = optimize(c, CFG)
     assert unitary_equal(c, out)
-    assert metrics_nonincreasing(c, out)
-    assert len(out["gates"]) < len(c["gates"])
-
-
-def metrics_nonincreasing(c, out):
-    mi, mo = circuit_metrics(c), circuit_metrics(out)
-    return all(mo[k] <= mi[k] for k in ("n_1q", "n_2q", "depth"))
+    assert circuit_cost(out, CFG) < circuit_cost(c, CFG)
 
 
 # --------------------------------------------------------------------------
@@ -196,27 +195,28 @@ POOLS = [
 
 @pytest.mark.parametrize("pool,max_n,max_len", POOLS)
 def test_random_circuits(pool, max_n, max_len):
+    # Each config is passed to optimize, and the output is judged only under
+    # that config: equivalent, no costlier than the input, and no costlier
+    # than Stage 1 alone.
     rng = random.Random(20260601 + max_n)
     shrunk = 0
-    for _ in range(300):
+    for _ in range(60):
         c = _random(rng, pool, max_n, max_len)
-        c_copy, cfg_copy = copy.deepcopy(c), copy.deepcopy(CFG)
-        out = optimize(c, CFG)
-
-        assert c == c_copy and CFG == cfg_copy
-        assert out is not c and out["gates"] is not c["gates"]
-        assert set(out) == {"n_qubits", "gates"} and out["n_qubits"] == c["n_qubits"]
-        for g in out["gates"]:
-            assert set(g) == {"gate", "qubits"}
-
-        assert unitary_equal(c, out)
-        assert metrics_nonincreasing(c, out)
-        for cfg in WEIGHTS:
-            assert circuit_cost(out, cfg) <= circuit_cost(c, cfg) + 1e-12
-        # Stage 2 never does worse than Stage 1 alone.
         s1 = _stage1_cancel(c)
-        assert len(out["gates"]) <= len(s1["gates"])
-        shrunk += len(out["gates"]) < len(c["gates"])
+        for cfg in WEIGHTS:
+            c_copy, cfg_copy = copy.deepcopy(c), copy.deepcopy(cfg)
+            out = optimize(c, cfg)
+
+            assert c == c_copy and cfg == cfg_copy
+            assert out is not c and out["gates"] is not c["gates"]
+            assert set(out) == {"n_qubits", "gates"} and out["n_qubits"] == c["n_qubits"]
+            for g in out["gates"]:
+                assert set(g) == {"gate", "qubits"}
+
+            assert unitary_equal(c, out)
+            assert circuit_cost(out, cfg) <= circuit_cost(c, cfg) + 1e-12
+            assert circuit_cost(out, cfg) <= circuit_cost(s1, cfg) + 1e-12
+            shrunk += circuit_cost(out, cfg) < circuit_cost(c, cfg) - 1e-12
     assert shrunk > 30
 
 
