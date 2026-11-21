@@ -22,6 +22,7 @@ This includes a LOCAL checker, not the organizers' private tests.
 import copy
 import functools
 import math
+import os
 
 import numpy as np
 
@@ -45,30 +46,49 @@ def optimize(circuit, config):
     # convergent loop, verify each against the input unitary, then pick the
     # cheapest under `config` (ties broken by a total order, see _key).
     n = circuit["n_qubits"]
-    current = _as_pairs(circuit)
+    original = _as_pairs(circuit)
+    reference = _fast_unitary(n, original)   # input unitary, computed once
+    current = original
     # Repeat the selection from its own result until it returns its input.
     # That makes optimize(optimize(c)) == optimize(c) exactly: the second call
     # starts from a fixed point (unless the MAX_ROUNDS budget ran out).
     for _ in range(MAX_ROUNDS):
-        best = _select(n, circuit, current, config)
+        best = _select(n, reference, current, config)
         if best == current:
             break
         current = best
-    return _from_pairs(n, current)
+    else:
+        _BUDGET_HITS["select"] += 1
+    result = _from_pairs(n, current)
+    # Final check with the OFFICIAL function. Every rewrite is an exact
+    # identity, so this should never fail; if it does, that is a bug: raise
+    # in strict mode (tests), otherwise return the input unchanged.
+    if not equivalent_up_to_global_phase(circuit, result):
+        if _strict():
+            raise AssertionError("optimize produced an inequivalent circuit")
+        return copy.deepcopy(circuit)
+    return result
 
 
-def _select(n, circuit, start, config):
+def _select(n, reference, start, config):
     """One round of 4f: fully optimize every candidate, verify, pick cheapest."""
-    s2 = _stage12(n, start)                            # Stages 1-2 only
-    a = _full_optimize(n, s2, config)                  # Pipeline A
-    b = _full_optimize(n, _pipeline_b(n, s2), config)  # Pipeline B (Zhang & Chen)
-    ab = _full_optimize(n, _pipeline_b(n, a), config)  # B applied to A's result
-    candidates = [start, s2, a, b, ab]
-    # Each candidate is checked against the ORIGINAL input. `start` is either
-    # the input or an earlier verified result, so the list is never empty;
-    # a failing pipeline is simply dropped (the spec's fallback chain).
-    verified = [(i, c) for i, c in enumerate(candidates)
-                if equivalent_up_to_global_phase(circuit, _from_pairs(n, c))]
+    s2 = _stage12(n, start)                                # Stages 1-2 only
+    candidates = [start, s2]
+    a = _full_optimize(n, s2, config)                      # Pipeline A
+    candidates.append(a)
+    if FEATURES["pipeline_b"]:
+        candidates.append(_full_optimize(n, _pipeline_b(n, s2), config))  # B
+        candidates.append(_full_optimize(n, _pipeline_b(n, a), config))   # B after A
+    # Each candidate is checked against the ORIGINAL input's unitary. Every
+    # pipeline is built from exact identities, so a rejection means a bug:
+    # strict mode (used by the tests) raises; otherwise the candidate is
+    # dropped. `start` is the input or an earlier verified result.
+    verified = []
+    for i, c in enumerate(candidates):
+        if _fast_equivalent(reference, n, c):
+            verified.append((i, c))
+        elif _strict():
+            raise AssertionError(f"candidate {i} failed verification")
     # Ties on cost go to the EARLIEST candidate (start first): the circuit is
     # only changed when something is strictly cheaper. Still a total order.
     return min(verified, key=lambda ic: (_cost_key(ic[1], config), ic[0]))[1]
@@ -400,10 +420,62 @@ def _stage2_reduce(gates):
 # are checked exactly with `_region_canon` (integer arithmetic, proven iff);
 # whole candidates are checked against the input unitary in `optimize`.
 
+# Work budgets (deterministic: counts, never time). Termination never depends
+# on them: every loop strictly lowers a well-ordered cost tuple. They bound
+# runtime; `_BUDGET_HITS` records any loop that stopped because of a cap, and
+# a test asserts that this never happens on the test corpus.
 MAX_ROUNDS = 8          # rounds of the full loop per candidate (work budget)
 MAX_CROSS_MOVES = 64    # accepted cross-region moves per round (work budget)
 BFS_MAX_WIRES = 4       # exact CX-optimal linear synthesis up to this width
 _REGION_GATES = frozenset(("CX", "X", "Z", "S", "SDG", "T", "TDG"))
+_BUDGET_HITS = {"select": 0, "full": 0, "cross": 0, "beam": 0}
+
+# Feature switches, used only by the ablation harness (bench.py) to measure
+# each component's contribution. All are on in normal use.
+FEATURES = {
+    "h_reduce": True,
+    "regions": True,
+    "cross_regions": True,
+    "pipeline_b": True,
+}
+
+
+def _strict():
+    """Strict mode (QUBLITZ_STRICT=1, set by the tests): fail loudly on bugs."""
+    return os.environ.get("QUBLITZ_STRICT") == "1"
+
+
+# --- fast exact verifier ------------------------------------------------------
+
+def _fast_unitary(n, gates):
+    """Circuit unitary by applying each gate to the matrix's rows directly.
+
+    Same convention as circuit_unitary (qubit 0 = most significant bit, first
+    gate acts first) but without building a 2^n x 2^n Kronecker product per
+    gate: CX permutes rows, a one-qubit gate mixes pairs of rows.
+    """
+    dim = 1 << n
+    u = np.eye(dim, dtype=complex)
+    index = np.arange(dim)
+    for name, qubits in gates:
+        if name == "CX":
+            cbit, tbit = 1 << (n - 1 - qubits[0]), 1 << (n - 1 - qubits[1])
+            u = u[np.where(index & cbit, index ^ tbit, index)]
+        else:
+            q = qubits[0]
+            u = u.reshape(1 << q, 2, dim >> (q + 1), dim)
+            u = np.einsum("ab,ibjk->iajk", _ONE_QUBIT_MATRICES[name], u).reshape(dim, dim)
+    return u
+
+
+def _fast_equivalent(reference, n, gates, atol=1e-9):
+    """Same global-phase test as equivalent_up_to_global_phase."""
+    b = _fast_unitary(n, gates)
+    a = reference
+    pivot = np.unravel_index(np.argmax(np.abs(a)), a.shape)
+    phase = b[pivot] / a[pivot]
+    return bool(np.isclose(abs(phase), 1.0, atol=atol, rtol=0.0)
+                and np.allclose(b, phase * a, atol=atol, rtol=0.0))
 
 
 # --- cost and total order ----------------------------------------------------
@@ -753,6 +825,8 @@ def _region_candidates(n, gates, wires):
             continue  # cleanup never adds H, but stay strict
         if _region_canon(cand, wires) == canon:
             out.append(cand)
+        elif _strict():
+            raise AssertionError("region rewrite changed the region's unitary")
     return out
 
 
@@ -901,6 +975,8 @@ def _cross_region_pass(n, gates, config):
                 moves += 1
                 changed = True
                 break
+    if changed and moves >= MAX_CROSS_MOVES:
+        _BUDGET_HITS["cross"] += 1
     return gates
 
 
@@ -1024,13 +1100,19 @@ def _full_optimize(n, gates, config):
     """Stages 1-2 + 4a + 4c + 4d, repeated until the cost tuple stops dropping."""
     gates = _stage12(n, gates)
     for _ in range(MAX_ROUNDS):
-        g = _stage12(n, _h_reduce(gates, config))
-        g = _stage12(n, _region_pass(n, g, config))
-        g = _stage12(n, _cross_region_pass(n, g, config))
+        g = gates
+        if FEATURES["h_reduce"]:
+            g = _stage12(n, _h_reduce(g, config))
+        if FEATURES["regions"]:
+            g = _stage12(n, _region_pass(n, g, config))
+        if FEATURES["cross_regions"]:
+            g = _stage12(n, _cross_region_pass(n, g, config))
         if _cost_key(g, config) < _cost_key(gates, config):
             gates = g
         else:
             break
+    else:
+        _BUDGET_HITS["full"] += 1
     return gates
 
 

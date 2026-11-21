@@ -474,3 +474,50 @@ def test_4f_deterministic_across_processes_and_hash_seeds():
     assert json.loads(outputs[0]) == json.loads(
         subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
                        check=True, cwd=here).stdout)
+
+
+# =============================================================================
+# Stage 5, step A: fast verifier, strict mode, budgets
+# =============================================================================
+def test_A_fast_unitary_matches_official():
+    rng = random.Random(60)
+    for _ in range(300):
+        n = rng.randint(1, 6)
+        g = rand_pairs(rng, n, rng.randint(0, 40), ALL)
+        assert np.allclose(s4._fast_unitary(n, g), s4.circuit_unitary(D(n, g)), atol=1e-9)
+
+
+def test_A_fast_equivalent_matches_official():
+    rng = random.Random(61)
+    same = 0
+    for _ in range(600):
+        n = rng.randint(1, 4)
+        a = rand_pairs(rng, n, rng.randint(0, 20), ALL)
+        b = s4._stage12(n, a) if rng.random() < 0.5 else rand_pairs(rng, n, rng.randint(0, 20), ALL)
+        official = E(D(n, a), D(n, b))
+        assert s4._fast_equivalent(s4._fast_unitary(n, a), n, b) == official
+        same += official
+    assert same > 200
+
+
+def test_A_strict_mode_raises_on_a_broken_pipeline(monkeypatch):
+    real = s4._pipeline_b
+    monkeypatch.setattr(s4, "_pipeline_b", lambda n, g: real(n, g) + [P("X", 0)])
+    c = D(2, [P("H", 0), P("CX", 0, 1), P("T", 1)])
+    monkeypatch.setenv("QUBLITZ_STRICT", "1")
+    with pytest.raises(AssertionError):
+        s4.optimize(c, CFG)
+    monkeypatch.setenv("QUBLITZ_STRICT", "0")
+    out = s4.optimize(c, CFG)          # non-strict: broken candidate dropped
+    assert E(c, out)
+
+
+def test_A_work_budgets_never_reached():
+    rng = random.Random(62)
+    for key in s4._BUDGET_HITS:
+        s4._BUDGET_HITS[key] = 0
+    for _ in range(60):
+        c = _random_circuit(rng)
+        for cfg in (CFG, {"w1": 1.0, "w2": 0.0, "wd": 0.0}, {"w1": 0.0, "w2": 0.0, "wd": 1.0}):
+            s4.optimize(c, cfg)
+    assert all(v == 0 for v in s4._BUDGET_HITS.values()), s4._BUDGET_HITS

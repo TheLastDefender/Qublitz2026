@@ -11,3 +11,7 @@ import sys
 _name = os.environ.get("SUBMISSION_MODULE")
 if _name and _name != "submission":
     sys.modules["submission"] = importlib.import_module(_name)
+
+# Strict mode for every test run: a failed internal verification raises
+# instead of silently dropping the candidate, so bugs surface as failures.
+os.environ.setdefault("QUBLITZ_STRICT", "1")
