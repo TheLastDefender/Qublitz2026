@@ -1,5 +1,7 @@
 # Stage 4: Region Resynthesis + Pauli-Rotation Alternative (Implementation Spec)
 
+> **File names (updated):** this document was written while the full optimizer lived in `submission_stage4.py`. That file is now **`submission.py`** (the file the organizers import), and the former Stage 1-2 `submission.py` is now **`stage2_baseline.py`**, kept only as the reference for tests and benchmarks. Read file names below accordingly.
+
 Implement inside `submission.py` (helpers in the same file; organizers import
 only this file). Build in sub-stages **4a → 4f**, one at a time, each with its
 own tests passing before the next starts. Stage 1–2 code stays and is reused.

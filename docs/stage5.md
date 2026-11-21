@@ -1,5 +1,7 @@
 # Stage 5: Results
 
+> **File names (updated):** this document was written while the full optimizer lived in `submission_stage4.py`. That file is now **`submission.py`** (the file the organizers import), and the former Stage 1-2 `submission.py` is now **`stage2_baseline.py`**, kept only as the reference for tests and benchmarks. Read file names below accordingly.
+
 Implementation: `submission_stage4.py`. `submission.py` is unchanged: it is the
 frozen Stage 2 baseline (option B). The plan is in `docs/stage5_plan.md`.
 All numbers come from `bench.py --quick` (35 circuits, fixed seed).

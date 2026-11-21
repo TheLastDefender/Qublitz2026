@@ -1,5 +1,7 @@
 # Stage 5 Plan: Bigger Improvements (implementation plan, not started)
 
+> **File names (updated):** this document was written while the full optimizer lived in `submission_stage4.py`. That file is now **`submission.py`** (the file the organizers import), and the former Stage 1-2 `submission.py` is now **`stage2_baseline.py`**, kept only as the reference for tests and benchmarks. Read file names below accordingly.
+
 Target file: `submission_stage4.py`. `submission.py` stays the frozen,
 verified Stage 2 baseline until the final one-step replacement (option B).
 Every rule from the Stage 4 spec section 0 still applies: exact identities

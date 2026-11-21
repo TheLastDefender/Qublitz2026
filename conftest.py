@@ -1,8 +1,8 @@
 """Optional: run the Stage 1/2 tests against another implementation file.
 
-    SUBMISSION_MODULE=submission_stage4 python -m pytest test_stage1.py test_stage2.py
+    SUBMISSION_MODULE=stage2_baseline python -m pytest test_stage1.py test_stage2.py
 
-Without the variable, tests use submission.py as usual.
+Without the variable, tests use submission.py (the full optimizer).
 """
 import importlib
 import os

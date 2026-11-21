@@ -1,4 +1,4 @@
-"""Stage 4 tests (sub-stages 4a-4f) for submission_stage4.py.
+"""Tests for the full optimizer in submission.py (Stage 4 onwards).
 
 Run:  python -m pytest test_stage4.py -q
 """
@@ -14,7 +14,7 @@ import sys
 import numpy as np
 import pytest
 
-import submission_stage4 as s4
+import submission as s4
 
 E = s4.equivalent_up_to_global_phase
 # Default sizes keep the whole file to a few minutes. STAGE4_FULL=1 runs the
@@ -381,7 +381,7 @@ def _random_circuit(rng):
 
 
 def test_4f_never_worse_than_stage2_and_valid():
-    import submission as stage2_module
+    import stage2_baseline as stage2_module
     rng = random.Random(52)
     for _ in range(500 if FULL else 120):
         c = _random_circuit(rng)
@@ -438,7 +438,7 @@ def test_4f_weights_change_the_choice():
 _DETERMINISM_SCRIPT = r"""
 import json, random, sys
 sys.path.insert(0, %r)
-import submission_stage4 as s4
+import submission as s4
 rng = random.Random(7)
 pool = sorted(s4.ALLOWED_GATES)
 results = []
@@ -743,7 +743,7 @@ def test_F_phase_segment_pass():
 def test_F_legacy_path_reproduces_submission_stage2_exactly():
     # The legacy Stage 2 result is always a candidate in _select, which is what
     # makes "never worse than Stage 2" hold by construction.
-    import submission as stage2_module
+    import stage2_baseline as stage2_module
     rng = random.Random(87)
     for _ in range(150):
         c = _random_circuit(rng)
@@ -766,7 +766,7 @@ def test_F_segment_placement_does_not_raise_depth():
 def test_D_full_beam_guarantees(monkeypatch):
     """Production beam settings: equivalent, never worse than Stage 2 or the
     input, idempotent, inputs untouched, budget never reached."""
-    import submission as stage2_module
+    import stage2_baseline as stage2_module
     monkeypatch.delenv("QUBLITZ_BEAM", raising=False)   # default width
     s4._BUDGET_HITS["beam"] = 0
     rng = random.Random(90)

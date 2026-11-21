@@ -1,4 +1,4 @@
-"""Benchmark + ablation harness for submission_stage4.py (not used by optimize).
+"""Benchmark + ablation harness for submission.py (not used by optimize).
 
 Run:  python bench.py            (full corpus)
       python bench.py --quick    (smaller corpus)
@@ -15,8 +15,8 @@ from collections import Counter
 
 import numpy as np
 
-import submission as stage2
-import submission_stage4 as s4
+import stage2_baseline as stage2
+import submission as s4
 
 PROFILES = {
     "w2-heavy (1,6,0.2)": {"w1": 1.0, "w2": 6.0, "wd": 0.2},
