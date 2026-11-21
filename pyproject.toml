@@ -1,12 +1,15 @@
 [project]
 name = "qublitz2026"
 version = "0.1.0"
-description = "Add your description here"
+description = "Exact, cost-aware quantum circuit optimizer (Qublitz 2026 Quantum Circuit Golf)"
 readme = "README.md"
-requires-python = ">=3.15"
+requires-python = ">=3.10"
 dependencies = [
-    "numpy>=2.5.5",
+    "numpy>=2.0",
 ]
+
+[project.optional-dependencies]
+test = ["pytest"]
 
 [project.scripts]
 qublitz2026 = "qublitz2026:main"
