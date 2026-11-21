@@ -92,7 +92,17 @@ def _select(n, reference, start, config):
             raise AssertionError(f"candidate {i} failed verification")
     # Ties on cost go to the EARLIEST candidate (start first): the circuit is
     # only changed when something is strictly cheaper. Still a total order.
-    return min(verified, key=lambda ic: (_cost_key(ic[1], config), ic[0]))[1]
+    best = min(verified, key=lambda ic: (_cost_key(ic[1], config), ic[0]))[1]
+    # Stage 5 D: beam search from the best greedy result. Accepted only if
+    # strictly cheaper AND verified, so it can never make the result worse.
+    if FEATURES["beam"]:
+        beamed = _beam_search(n, best, config)
+        if _cost_key(beamed, config) < _cost_key(best, config):
+            if _fast_equivalent(reference, n, beamed):
+                return beamed
+            if _strict():
+                raise AssertionError("beam search result failed verification")
+    return best
 
 
 def _stage12(n, gates, legacy=False):
@@ -562,6 +572,7 @@ FEATURES = {
     "fold": True,
     "blocks": True,
     "convex_regions": True,
+    "beam": True,
 }
 
 
@@ -1699,6 +1710,145 @@ def _convex_region_pass(n, gates, config):
         gates = accepted
     _BUDGET_HITS["regions"] += 1
     return gates
+
+
+# --- Stage 5 D: beam search over exact moves -----------------------------------
+#
+# Greedy passes only accept immediate improvements, so they stop in local
+# minima. The beam keeps the `width` best distinct circuits at each step,
+# including ones that are temporarily worse, and expands each with every move.
+# Every move is an exact identity, every child is cleaned by Stages 1-2, and
+# the result is verified like any other candidate.
+
+# (width, patience, max evaluations). "full" is the production setting,
+# calibrated with bench.py: on the quick corpus, width 16 / patience 5 gave
+# 2.6% lower cost than width 6 / patience 3 at a median of ~0.7 s per call
+# (max ~10 s on the largest circuits), and never hit the evaluation budget.
+# "fast" exists only so the bulk test suites finish in minutes; a dedicated
+# test runs "full". Set with QUBLITZ_BEAM; deterministic either way.
+BEAM_PROFILES = {"full": (16, 5, 16000), "fast": (4, 2, 1000)}
+
+
+def _beam_settings():
+    return BEAM_PROFILES[os.environ.get("QUBLITZ_BEAM", "full")]
+
+
+def _canon(gates):
+    """Per-wire gate sequences: equal exactly when the circuits have the same
+    gates in the same order on every wire (same DAG), whatever the listing."""
+    wires = {}
+    for g in gates:
+        for q in g[1]:
+            wires.setdefault(q, []).append(g)
+    return tuple((q, tuple(wires[q])) for q in sorted(wires))
+
+
+def _local_moves(gates):
+    """Exact local rewrites, including ones that raise cost. Fixed order."""
+    out = []
+    for k, (name, qubits) in enumerate(gates):
+        if name == "CX":
+            c, t = qubits
+            nc, nt = _next_on(gates, k, c), _next_on(gates, k, t)
+            pc, pt = _prev_on(gates, k, c), _prev_on(gates, k, t)
+            # Pauli push: X_c CX = CX X_c X_t ; CX X_c = X_c X_t CX
+            #             Z_t CX = CX Z_c Z_t ; CX Z_t = Z_c Z_t CX
+            if pc is not None and gates[pc] == ("X", (c,)):
+                out.append(_move(gates, drop={pc}, after={k: [("X", (c,)), ("X", (t,))]}))
+            if nc is not None and gates[nc] == ("X", (c,)):
+                out.append(_move(gates, drop={nc}, before={k: [("X", (c,)), ("X", (t,))]}))
+            if pt is not None and gates[pt] == ("Z", (t,)):
+                out.append(_move(gates, drop={pt}, after={k: [("Z", (c,)), ("Z", (t,))]}))
+            if nt is not None and gates[nt] == ("Z", (t,)):
+                out.append(_move(gates, drop={nt}, before={k: [("Z", (c,)), ("Z", (t,))]}))
+            # CX reversal: CX(c,t) = H_c H_t CX(t,c) H_c H_t
+            hh = [("H", (c,)), ("H", (t,))]
+            out.append(_move(gates, replace={k: hh + [("CX", (t, c))] + hh}))
+        elif name in ("H", "S", "SDG"):
+            q = qubits[0]
+            j = _next_on(gates, k, q)
+            l = _next_on(gates, j, q) if j is not None else None
+            if l is not None and len(gates[j][1]) == 1 and len(gates[l][1]) == 1:
+                triple = (name, gates[j][0], gates[l][0])
+                swap = {("H", "S", "H"): ("SDG", "H", "SDG"), ("SDG", "H", "SDG"): ("H", "S", "H"),
+                        ("H", "SDG", "H"): ("S", "H", "S"), ("S", "H", "S"): ("H", "SDG", "H")}
+                if triple in swap:
+                    new = list(gates)
+                    for idx, nm in zip((k, j, l), swap[triple]):
+                        new[idx] = (nm, (q,))
+                    out.append(new)
+        # Commute-swap with the next gate on a shared wire (changes the DAG).
+        for q in qubits:
+            j = _next_on(gates, k, q)
+            if j is not None and _commutes(gates[k], gates[j]):
+                # gates[j] must not depend on anything between k and j on its other wires
+                blocked = any(_prev_on(gates, j, w) not in (k, None) and _prev_on(gates, j, w) > k
+                              for w in gates[j][1])
+                if not blocked:
+                    new = list(gates)
+                    new.insert(k, new.pop(j))
+                    out.append(new)
+    return out
+
+
+def _move(gates, drop=(), before=None, after=None, replace=None):
+    before, after, replace = before or {}, after or {}, replace or {}
+    out = []
+    for i, g in enumerate(gates):
+        if i in drop:
+            continue
+        out.extend(before.get(i, []))
+        out.extend(replace.get(i, [g]))
+        out.extend(after.get(i, []))
+    return out
+
+
+def _improving_moves(n, gates, config):
+    """The composite passes, each applied once to the state (exact)."""
+    return [
+        _phase_fold(gates, "first"),
+        _phase_fold(gates, "last"),
+        _h_reduce(gates, config),
+        _region_pass(n, gates, config),
+        _convex_region_pass(n, gates, config),
+        _cross_region_pass(n, gates, config),   # beam-only: hurts when greedy
+        _block_pass(n, gates, config),
+        _pipeline_b(n, gates),
+    ]
+
+
+def _beam_search(n, start, config):
+    width, patience, max_evals = _beam_settings()
+    best = list(start)
+    beam = [best]
+    seen = {_canon(best)}
+    evals = 0
+    stale = 0
+    while beam and stale < patience:
+        children = []
+        for state in beam:
+            for child in _improving_moves(n, state, config) + _local_moves(state):
+                child = _stage12(n, child)
+                key = _canon(child)
+                if key in seen:
+                    continue
+                seen.add(key)
+                children.append(child)
+                evals += 1
+                if evals >= max_evals:
+                    break
+            if evals >= max_evals:
+                break
+        children.sort(key=lambda c: _key(c, config))
+        beam = children[:width]
+        if beam and _cost_key(beam[0], config) < _cost_key(best, config):
+            best, stale = beam[0], 0
+        else:
+            stale += 1
+        if evals >= max_evals:
+            _BUDGET_HITS["beam"] += 1
+            break
+    return best
 
 
 # --- the shared, convergent optimization loop (used by every candidate) -------------

@@ -15,3 +15,7 @@ if _name and _name != "submission":
 # Strict mode for every test run: a failed internal verification raises
 # instead of silently dropping the candidate, so bugs surface as failures.
 os.environ.setdefault("QUBLITZ_STRICT", "1")
+
+# Bulk tests use the reduced "fast" beam so the suites finish in minutes;
+# test_stage4.py::test_D_full_beam_guarantees runs the production "full" beam.
+os.environ.setdefault("QUBLITZ_BEAM", "fast")

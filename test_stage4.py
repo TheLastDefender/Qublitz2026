@@ -757,3 +757,61 @@ def test_F_segment_placement_does_not_raise_depth():
     g = [P("T", 0), P("CX", 0, 1), P("T", 0), P("CX", 0, 2), P("T", 0)]
     out, changed = s4._phase_segment_pass(g)
     assert changed and s4._metrics_pairs(out)[2] <= s4._metrics_pairs(g)[2]
+
+
+# =============================================================================
+# Stage 5, step D: beam search
+# =============================================================================
+def test_D_full_beam_guarantees(monkeypatch):
+    """Production beam settings: equivalent, never worse than Stage 2 or the
+    input, idempotent, inputs untouched, budget never reached."""
+    import submission as stage2_module
+    monkeypatch.setenv("QUBLITZ_BEAM", "full")
+    s4._BUDGET_HITS["beam"] = 0
+    rng = random.Random(90)
+    for _ in range(12):
+        c = _random_circuit(rng)
+        for cfg in (CFG, {"w1": 0.0, "w2": 0.0, "wd": 1.0}):
+            c_copy = copy.deepcopy(c)
+            out = s4.optimize(c, cfg)
+            assert c == c_copy and E(c, out)
+            assert s4.circuit_cost(out, cfg) <= s4.circuit_cost(stage2_module.optimize(c, cfg), cfg) + 1e-12
+            assert s4.circuit_cost(out, cfg) <= s4.circuit_cost(c, cfg) + 1e-12
+            assert s4.optimize(out, cfg) == out
+    assert s4._BUDGET_HITS["beam"] == 0
+
+
+def test_D_local_moves_are_exact():
+    rng = random.Random(91)
+    for _ in range(150):
+        n = rng.randint(2, 4)
+        g = rand_pairs(rng, n, rng.randint(1, 25), ALL)
+        ref = s4._fast_unitary(n, g)
+        for child in s4._local_moves(g):
+            assert s4._fast_equivalent(ref, n, child)
+
+
+def test_D_beam_never_worse_than_its_start():
+    rng = random.Random(92)
+    for _ in range(30):
+        n = rng.randint(2, 5)
+        g = s4._stage12(n, rand_pairs(rng, n, rng.randint(5, 40), ALL))
+        out = s4._beam_search(n, g, CFG)
+        assert s4._fast_equivalent(s4._fast_unitary(n, g), n, out)
+        assert s4._cost_key(out, CFG) <= s4._cost_key(g, CFG)
+
+
+def test_D_beam_escapes_a_local_minimum():
+    # X0 CX01 X0 CX01: no single greedy pass helps directly, but pushing X0
+    # through the first CX (cost +1) lets the CX pair cancel: result X1.
+    g = [P("X", 0), P("CX", 0, 1), P("X", 0), P("CX", 0, 1)]
+    out = s4._beam_search(2, s4._stage12(2, g), CFG)
+    assert E(D(2, g), D(2, out))
+    assert s4._cost_key(out, CFG) < s4._cost_key(s4._stage12(2, g), CFG)
+
+
+def test_D_canon_identifies_reorderings():
+    g = [P("H", 0), P("T", 1), P("CX", 0, 1)]
+    h = [P("T", 1), P("H", 0), P("CX", 0, 1)]
+    assert s4._canon(g) == s4._canon(h)
+    assert s4._canon(g) != s4._canon([P("CX", 0, 1), P("H", 0), P("T", 1)])
