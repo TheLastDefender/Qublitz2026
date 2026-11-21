@@ -62,25 +62,50 @@ costlier than Stage 2, strictly cheaper on 321, and idempotent on all 750.
 
 ## Verification
 
-- `test_stage4.py` has 38 tests across 4a–4f:
+- `test_stage4.py` has 40 tests across 4a–4f:
   - every rule identity;
   - representation round-trips (1,000 circuits);
   - `canon` agreeing with the unitary in both directions;
   - the BFS table, which reaches all 20,160 maps for 4 wires (|GL(4,2)|);
   - tableau rules against matrices for every gate and every 3-qubit Pauli;
   - Toffoli×2 → 0 and compute/uncompute → H;
-  - 500 random circuits × 6 weight configs (never worse than Stage 2 or the input, valid, inputs untouched);
-  - exact idempotence;
+  - random circuits × 6 weight configs: never worse than Stage 2 or the input, valid output, inputs untouched (120 circuits by default; `STAGE4_FULL=1` runs the spec's 500);
+  - exact idempotence, plus "unchanged unless strictly cheaper";
   - weight sensitivity;
   - byte-identical output across 3 processes with different `PYTHONHASHSEED`.
-- **Mutation testing:** 8 deliberately injected bugs. See the table below.
+- **Mutation testing:** 8 deliberately injected bugs. The tests caught
+  6 immediately. The other 2 survived at first, and each exposed a test gap:
+
+  | Mutant | Result |
+  |---|---|
+  | X-before-T sign flip removed | caught |
+  | Pauli CX sign rule removed | caught |
+  | Gauss ops not reversed | caught |
+  | Rotation merge ignores blockers | caught |
+  | Canonical terms: wrong sign | caught |
+  | Y-basis undo uses SDG instead of S | caught |
+  | Final tie-break by gate tuple | **survived**. I had wrongly credited this tie-break with idempotence; the repeat loop provides that. Its real job is "return the input unchanged unless something is strictly cheaper". New test `test_4f_unchanged_unless_strictly_cheaper` now catches it. |
+  | H-delay emits H gates eagerly | **survived**, because 4d region merging hid it. The new direct test also found that *always* delaying H can be worse: a leading H can move into the middle. `_region_order` now picks the order with the fewest regions among {given, H-delayed, H-eager}, never more than the input. Now caught. |
+
 - **Stage 1/2 tests run against `submission_stage4.py`** (`SUBMISSION_MODULE=submission_stage4`):
-  41/45 pass. The 4 failures are by design. They assert Stage 1–2 guarantees
-  that Stage 4 deliberately trades away for lower weighted cost:
-  - "no metric ever increases": one case goes 11 → 12 one-qubit gates in exchange for fewer CX;
-  - "never longer than Stage 1": one case is 17 vs 16 gates but cheaper;
-  - "`CX01 X0 CX01` stays 3 gates": it becomes `X0 X1`;
-  - "`CX01 Z1 CX01` stays 3 gates": it becomes `Z0 Z1`.
+  41/45 pass. Against `submission.py`, all 45 pass. The 4 failures:
+  - **`CX01 X0 CX01` stays 3 gates** and **`CX01 Z1 CX01` stays 3 gates.**
+    These tests pinned a Stage 2 *limitation*. Stage 4 rewrites them to
+    `X0 X1` and `Z0 Z1` (verified identities that remove both CX gates).
+  - **"No metric ever increases"** (Stage 1 random, circuit 458) and
+    **"never more gates than Stage 1"** (Stage 2 pool2, circuit 5).
+    - Under the weights `optimize` was given (1, 6, 0.2), Stage 4 is
+      strictly cheaper than Stage 2: 31.4 vs 35.4, and 34.6 vs 43.4. It trades
+      extra one-qubit gates for fewer CX gates (4→3, 5→3).
+    - **Caveat, checked:** the same output scored under *different* weights
+      can be worse. Circuit 458's output has 12 one-qubit gates against the
+      input's 11, so under w1-only weights it is costlier than the input.
+    - That is inherent to optimizing for given weights. Stage 1–2 never
+      increased any metric, so their outputs happened to be good under every
+      weighting, and those tests assume it.
+    - The organizers score each output under the weights they pass in. The
+      guarantee that matters is checked for 6 weight settings, each passed
+      to `optimize`: no costlier under those weights than the input or Stage 2.
 
 ## Limitations
 
@@ -88,7 +113,8 @@ costlier than Stage 2, strictly cheaper on 321, and idempotent on all 750.
   regions use Gauss–Jordan, which may lose to the original. The original is
   always a candidate, so this never makes a result worse.
 - Phase placement during resynthesis is greedy, not GraySynth.
-- Regions are found in list order, after H-delay ordering. That is not the
-  maximal "H-free sub-circuit" in the DAG sense.
-- Runtime: about 0.02–0.1 s per optimize call at 60 gates; the full Stage 4
-  test file takes about 2 minutes.
+- Regions are found in list order, after choosing the best of three
+  wire-order-preserving orderings. That is not the maximal "H-free
+  sub-circuit" in the DAG sense.
+- Runtime: median about 27 ms per `optimize` call at up to 60 gates (max seen 135 ms).
+  The default Stage 4 test file takes about 1.5 minutes.

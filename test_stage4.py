@@ -17,6 +17,9 @@ import pytest
 import submission_stage4 as s4
 
 E = s4.equivalent_up_to_global_phase
+# Default sizes keep the whole file to a few minutes. STAGE4_FULL=1 runs the
+# spec's full sizes (500 circuits x 6 configs, 200 idempotence circuits).
+FULL = os.environ.get("STAGE4_FULL") == "1"
 CFG = {"w1": 1.0, "w2": 6.0, "wd": 0.2}
 WEIGHTS = [
     {"w1": 1.0, "w2": 6.0, "wd": 0.2},
@@ -239,6 +242,28 @@ def test_4d_cross_region_pass_preserves_unitary():
         assert s4._cost_key(out, CFG) <= s4._cost_key(g, CFG)
 
 
+def test_4d_h_delay_order_lengthens_regions():
+    # T1 H0 T1: H0 is on another wire, so the two T1's can share one region.
+    g = [P("T", 1), P("H", 0), P("T", 1)]
+    assert s4._h_delay_order(g) == [P("T", 1), P("T", 1), P("H", 0)]
+    assert s4._h_delay_order(g, eager=True) == [P("H", 0), P("T", 1), P("T", 1)]
+    assert len(s4._region_spans(s4._region_order(g))) == 1
+    # Delaying is not always better (found by this test): a leading H that a
+    # later CX needs would be moved into the middle. _region_order keeps the
+    # original then, so it never has more regions than the input.
+    lead = [P("H", 1), P("X", 0), P("CX", 0, 1), P("T", 1)]
+    assert len(s4._region_spans(s4._h_delay_order(lead))) == 2
+    assert len(s4._region_spans(s4._region_order(lead))) == 1
+    rng = random.Random(56)
+    for _ in range(300):
+        n = rng.randint(1, 5)
+        g = rand_pairs(rng, n, rng.randint(0, 40), ALL)
+        out = s4._region_order(g)
+        assert len(s4._region_spans(out)) <= len(s4._region_spans(g))
+        for q in range(n):
+            assert [x for x in g if q in x[1]] == [x for x in out if q in x[1]]
+
+
 def test_4d_h_delay_order_keeps_wire_order():
     rng = random.Random(48)
     for _ in range(300):
@@ -357,7 +382,7 @@ def _random_circuit(rng):
 def test_4f_never_worse_than_stage2_and_valid():
     import submission as stage2_module
     rng = random.Random(52)
-    for _ in range(500):
+    for _ in range(500 if FULL else 120):
         c = _random_circuit(rng)
         for cfg in WEIGHTS:
             c_copy, cfg_copy = copy.deepcopy(c), copy.deepcopy(cfg)
@@ -375,11 +400,27 @@ def test_4f_idempotent():
     # optimize repeats its selection until nothing is strictly cheaper, and
     # ties keep the input, so a second call must return the same circuit.
     rng = random.Random(53)
-    for _ in range(200):
+    for _ in range(200 if FULL else 80):
         c = _random_circuit(rng)
         for cfg in (CFG, {"w1": 1.0, "w2": 0.0, "wd": 0.0}):
             once = s4.optimize(c, cfg)
             assert s4.optimize(once, cfg) == once
+
+
+def test_4f_unchanged_unless_strictly_cheaper():
+    # Ties keep the input: if optimize found nothing strictly cheaper (same
+    # cost tuple), it must return the input exactly, not an equal-cost rewrite.
+    rng = random.Random(55)
+    ties = 0
+    for _ in range(150):
+        c = _random_circuit(rng)
+        for cfg in (CFG, {"w1": 1.0, "w2": 0.0, "wd": 0.0}):
+            out = s4.optimize(c, cfg)
+            pairs_in, pairs_out = s4._as_pairs(c), s4._as_pairs(out)
+            if s4._cost_key(pairs_out, cfg) == s4._cost_key(pairs_in, cfg):
+                ties += 1
+                assert out == c
+    assert ties > 10  # the property is actually exercised
 
 
 def test_4f_weights_change_the_choice():

@@ -51,9 +51,11 @@ Same input and same config give byte-identical output on any machine and any run
 ### 0.4 Tie-breaking (total order on candidates)
 - **Final selection (4f):** compare `(cost, n_2q, depth, n_1q, candidate index)`.
   The candidate list is in a fixed order with the round's starting circuit first,
-  so on equal cost the circuit is **left unchanged**. This replaced an earlier
-  gate-tuple tie-break, which let a second `optimize` call swap to a
-  lexicographically smaller circuit of equal cost and broke idempotence.
+  so on equal cost the circuit is **left unchanged**: `optimize` changes a
+  circuit only when it finds something strictly cheaper. (Idempotence comes
+  from the repeat loop in 4f, not from this tie-break. A mutation test showed
+  that a gate-tuple tie-break is also idempotent, but it swaps equal-cost
+  circuits. `test_4f_unchanged_unless_strictly_cheaper` pins this property.)
 - **Inside a pass** (choosing among region rewrites): compare
   `(cost, n_2q, depth, n_1q, gate_list_as_tuple)`. That is a total order.
 
@@ -327,8 +329,13 @@ optimize(circuit, config):
   subprocess (also with a different `PYTHONHASHSEED`). Outputs are identical.
 - `cost(optimize(c)) <= cost(Stage 2(c))` under 6 configs, on 500 random circuits.
 - `optimize(optimize(c)) == optimize(c)` exactly. This is guaranteed by the
-  repeat-until-no-strict-improvement loop and the keep-current tie-break.
-- All Stage 1 and Stage 2 tests still pass.
+  repeat-the-selection-until-nothing-changes loop: the second call starts
+  from a fixed point. (It holds unless the `MAX_ROUNDS` budget runs out.)
+- On a cost tie, the input is returned unchanged (keep-current tie-break).
+- All Stage 1 and Stage 2 tests still pass. (As implemented: 41/45 pass against
+  `submission_stage4.py`. The 4 failures assert Stage 1–2 properties, such as
+  "no metric increases", that weighted-cost selection deliberately gives up.
+  See `docs/stage4.md`.)
 - Inputs are unchanged, and the output format is valid.
 
 ---
@@ -364,10 +371,13 @@ Each change keeps the result exact and deterministic. Most make the code simpler
      `2^{d-1}·x_{i1}…x_{id} = Σ_{T⊆S, T≠∅} (−1)^{|T|+1} p_T`.
 
    Both term lists are tried, and every result is checked against the table.
-2. **H-delay ordering (4b).** Before slicing into regions, gates are put in a
-   topological order that postpones H gates as long as possible. Every wire's
-   order is unchanged, so the unitary and all metrics are identical, but the
-   H-free runs get longer.
+2. **Region-friendly ordering (4b).** Before slicing into regions, three
+   wire-order-preserving orderings are compared: the given order, H gates
+   postponed, and H gates emitted eagerly. The one with the fewest H-free
+   regions is used, and the given order wins ties. "Always postpone H" alone
+   was tried first, and a test showed it can move a leading H into the middle
+   and *add* a region. Every wire's order is unchanged, so the unitary and all
+   metrics are identical.
 3. **Backward-only floating (4d).** A region's terms act on its *input* wires,
    so a term of R_{i+1} is already a gadget at R_{i+1}'s start. It moves into
    R_i with no translation. Forward floating (the `(A⁻¹)ᵀ` translation) isn't

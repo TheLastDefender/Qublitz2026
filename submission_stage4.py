@@ -46,9 +46,9 @@ def optimize(circuit, config):
     # cheapest under `config` (ties broken by a total order, see _key).
     n = circuit["n_qubits"]
     current = _as_pairs(circuit)
-    # Repeat the selection from its own result until nothing is strictly
-    # cheaper. Then optimize(optimize(c)) == optimize(c) exactly (the second
-    # call repeats the final, unproductive round), unless the budget ran out.
+    # Repeat the selection from its own result until it returns its input.
+    # That makes optimize(optimize(c)) == optimize(c) exactly: the second call
+    # starts from a fixed point (unless the MAX_ROUNDS budget ran out).
     for _ in range(MAX_ROUNDS):
         best = _select(n, circuit, current, config)
         if best == current:
@@ -764,12 +764,14 @@ def _best_region(n, gates, config):
     return min(_region_candidates(n, gates, wires), key=lambda c: _key(c, config))
 
 
-def _h_delay_order(gates):
-    """Topological re-sort that postpones H gates as long as possible.
+def _h_delay_order(gates, eager=False):
+    """Topological re-sort that postpones H gates as long as possible
+    (or, with eager=True, emits each H as soon as it is ready).
 
-    Keeps every wire's gate order (so the unitary and all metrics are
-    unchanged) while making the H-free runs as long as possible.
-    Ties are broken by original index, so the result is deterministic.
+    Keeps every wire's gate order, so the unitary and all metrics are
+    unchanged. Ties are broken by original index, so it is deterministic.
+    Neither variant is always best: postponing an H that is needed later can
+    move a boundary from the start into the middle. `_region_order` picks.
     """
     import heapq
     preds = [0] * len(gates)
@@ -794,7 +796,7 @@ def _h_delay_order(gates):
                 heapq.heappush(ready_h if gates[s][0] == "H" else ready_other, s)
 
     while ready_other or ready_h:
-        if ready_other:
+        if ready_other and not (eager and ready_h):
             i = heapq.heappop(ready_other)
             order.append(i)
             release(i)
@@ -805,6 +807,17 @@ def _h_delay_order(gates):
             for i in batch:
                 release(i)
     return [gates[i] for i in order]
+
+
+def _region_order(gates):
+    """Wire-order-preserving reordering with the fewest H-free regions.
+
+    Candidates: the given order, H-delayed, H-eager. Fewest regions wins;
+    ties go to the earliest candidate, so the given order is kept unless
+    another is strictly better. Never more regions than the input.
+    """
+    options = [list(gates), _h_delay_order(gates), _h_delay_order(gates, eager=True)]
+    return min(enumerate(options), key=lambda io: (len(_region_spans(io[1])), io[0]))[1]
 
 
 def _region_spans(gates):
@@ -825,7 +838,7 @@ def _region_spans(gates):
 
 def _region_pass(n, gates, config):
     """Replace every region by its cheapest verified rewrite (in context)."""
-    gates = _h_delay_order(gates)
+    gates = _region_order(gates)
     for s, e in reversed(_region_spans(gates)):  # right to left keeps indices valid
         segment = gates[s:e]
         wires = _wires_of(segment)
@@ -851,7 +864,7 @@ def _region_pass(n, gates, config):
 #     and form one region; if they are mutually inverse it resynthesizes to [].
 
 def _cross_region_pass(n, gates, config):
-    gates = _h_delay_order(gates)
+    gates = _region_order(gates)
     moves = 0
     changed = True
     while changed and moves < MAX_CROSS_MOVES:
@@ -884,7 +897,7 @@ def _cross_region_pass(n, gates, config):
                                   + _best_region(n, right_rest, config) + suffix)
             best = min(candidates, key=lambda g: _key(g, config), default=None)
             if best is not None and _cost_key(best, config) < base[:4]:
-                gates = _h_delay_order(best)
+                gates = _region_order(best)
                 moves += 1
                 changed = True
                 break
