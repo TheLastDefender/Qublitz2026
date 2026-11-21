@@ -20,6 +20,7 @@ This includes a LOCAL checker, not the organizers' private tests.
 """
 
 import copy
+import functools
 import math
 
 import numpy as np
@@ -40,8 +41,34 @@ def optimize(circuit, config):
     validate_circuit(circuit)
     validate_config(config)
 
-    # Stage 1: basic gate cancellation (self-inverse pairs + phase-run merging).
-    return _stage1_cancel(circuit)
+    # Stage 1: per-wire stack cancellation (adjacent pairs + phase-run merging).
+    # Stage 2: commutation-aware cancellation and single-wire window rewrites,
+    # iterated until no rewrite shortens the circuit.
+    n = circuit["n_qubits"]
+    gates = _as_pairs(_stage1_cancel(circuit))
+    # Stage 1 can expand a phase run into two gates with no net saving (e.g.
+    # SDG,TDG -> Z,T). Stage 2 does not undo that, so re-run Stage 1 on the
+    # result. Iterate until Stage 2 changes nothing: then the output is a fixed
+    # point, and optimize(optimize(c)) == optimize(c).
+    # Terminates: Stage 2 returns its input unchanged unless it found a strictly
+    # shorter circuit, and Stage 1 never lengthens, so each extra round removes
+    # at least one gate.
+    while True:
+        reduced = _stage2_reduce(gates)
+        if reduced == gates:
+            return _from_pairs(n, gates)
+        gates = _as_pairs(_stage1_cancel(_from_pairs(n, reduced)))
+
+
+def _as_pairs(circuit):
+    return [(g["gate"], tuple(g["qubits"])) for g in circuit["gates"]]
+
+
+def _from_pairs(n, gates):
+    return {
+        "n_qubits": n,
+        "gates": [{"gate": name, "qubits": list(qubits)} for name, qubits in gates],
+    }
 
 
 # --- Stage 1 helpers --------------------------------------------------------
@@ -144,6 +171,191 @@ def _stage1_cancel(circuit):
             gates.append({"gate": payload, "qubits": list(qubits)})
 
     return {"n_qubits": n, "gates": gates}
+
+
+# --- Stage 2 helpers --------------------------------------------------------
+#
+# Stage 2 works on a flat list of (name, qubits) tuples. Two mechanisms:
+#
+# (a) COMMUTATION. Sequences below are in circuit (time) order, as listed.
+#     If gate g commutes with every gate M between g and a
+#     partner p on the same wire(s), then g M p = M g p. If p = g, that is
+#     M g g = M, so both vanish. If p is a phase gate on the same wire, the
+#     two phases fuse. A gate is only moved in the algebra, never in the
+#     output: the output just drops g and rewrites p in place.
+#     Gates on disjoint qubits always commute and are skipped.
+#     `_commutes` checks each pair exactly against the unitary, so no
+#     commutation rule is trusted without verification.
+#
+# (b) SINGLE-WIRE WINDOWS. A run of consecutive single-qubit gates on one
+#     wire, of length 2..4, is replaced by the shortest gate list with the same
+#     one-qubit unitary up to phase. This is the "sandwich" family: H X H -> Z,
+#     X T X -> TDG, etc. The table is built by enumeration, not typed in.
+#
+# Termination: every accepted rewrite strictly lowers the gate count, so the
+# loop always ends. Merges are accepted only when the merged phase needs at
+# most one gate, so a pairwise merge never just relabels the pair.
+
+_SINGLE_NAMES = sorted(SINGLE_QUBIT_GATES)
+
+
+def _unitary_key(u):
+    """Hashable key for a 2x2 or 4x4 unitary, normalized to remove global phase."""
+    flat = u.flatten()
+    pivot = int(np.argmax(np.abs(flat) > 1e-9))
+    u = u / (flat[pivot] / abs(flat[pivot]))
+    return tuple(np.round(u.flatten(), 6).view(float).tolist())
+
+
+def _build_window_table(max_len=4):
+    """Shortest one-qubit gate list for each unitary class, lengths 0..max_len."""
+    table = {_unitary_key(np.eye(2, dtype=complex)): []}
+    frontier = [[]]
+    for _ in range(max_len):
+        next_frontier = []
+        for seq in frontier:
+            for name in _SINGLE_NAMES:
+                new_seq = seq + [name]
+                key = _unitary_key(_seq_matrix(new_seq))
+                if key not in table:
+                    table[key] = new_seq
+                    next_frontier.append(new_seq)
+        frontier = next_frontier
+    return table
+
+
+def _seq_matrix(names):
+    """Product matrix for a sequence of one-qubit gate names (first acts first)."""
+    u = np.eye(2, dtype=complex)
+    for name in names:
+        u = _ONE_QUBIT_MATRICES[name] @ u
+    return u
+
+
+_WINDOW_TABLE = None
+
+
+def _window_table():
+    """Build the window table on first use (it needs _ONE_QUBIT_MATRICES, defined below)."""
+    global _WINDOW_TABLE
+    if _WINDOW_TABLE is None:
+        _WINDOW_TABLE = _build_window_table(4)
+    return _WINDOW_TABLE
+
+
+def _commutes(first, second):
+    """Exact check: do two gates commute as operators on their union of qubits?"""
+    union = sorted(set(first[1]) | set(second[1]))
+    index = {q: i for i, q in enumerate(union)}
+    return _commute_relabelled(
+        first[0], tuple(index[q] for q in first[1]),
+        second[0], tuple(index[q] for q in second[1]),
+        len(union))
+
+
+@functools.lru_cache(maxsize=None)
+def _commute_relabelled(name_a, qubits_a, name_b, qubits_b, m):
+    """Cached matrix commutator test on m local qubits (depends only on the pattern)."""
+    ua = _full_gate_matrix(m, {"gate": name_a, "qubits": list(qubits_a)})
+    ub = _full_gate_matrix(m, {"gate": name_b, "qubits": list(qubits_b)})
+    return bool(np.allclose(ua @ ub, ub @ ua, atol=1e-9, rtol=0.0))
+
+
+def _is_phase(name):
+    return name in _PHASE_K
+
+
+def _commute_cancel_pass(gates):
+    """One sweep: each gate looks forward for a partner it can reach.
+
+    Returns a new list. Only ever shorter or equal in length.
+    """
+    cur = list(gates)
+    alive = [True] * len(cur)
+    changed = False
+    for i in range(len(cur)):
+        if not alive[i]:
+            continue
+        gi = cur[i]
+        for j in range(i + 1, len(cur)):
+            if not alive[j]:
+                continue
+            gj = cur[j]
+            if not set(gi[1]) & set(gj[1]):
+                continue  # disjoint gates commute trivially
+            # Partner: self-inverse cancellation.
+            if gi == gj and gi[0] in ("H", "X", "CX"):
+                alive[i] = alive[j] = False
+                changed = True
+                break
+            # Partner: phase merge on the same single wire.
+            if (_is_phase(gi[0]) and _is_phase(gj[0]) and gi[1] == gj[1]):
+                k = (_PHASE_K[gi[0]] + _PHASE_K[gj[0]]) % 8
+                out = _PHASE_OUT[k]
+                if len(out) <= 1:  # only merge when it strictly shortens
+                    alive[i] = False
+                    changed = True
+                    if out:
+                        cur[j] = (out[0], gj[1])
+                    else:
+                        alive[j] = False
+                    break
+            # Otherwise gj is a blocker unless it commutes with gi.
+            if not _commutes(gi, gj):
+                break
+    return [cur[k] for k in range(len(cur)) if alive[k]] if changed else list(gates)
+
+
+def _window_pass(gates):
+    """Replace the first improvable one-qubit window. Returns (gates, changed)."""
+    n_gates = len(gates)
+    for q in sorted({w for _, qs in gates for w in qs}):
+        positions = [k for k in range(n_gates) if q in gates[k][1]]
+        # Walk maximal runs of single-qubit gates on this wire.
+        run = []
+        runs = []
+        for k in positions:
+            name, qs = gates[k]
+            if len(qs) == 1:
+                run.append(k)
+            else:
+                if run:
+                    runs.append(run)
+                run = []
+        if run:
+            runs.append(run)
+        for run in runs:
+            for length in (4, 3, 2):
+                for s in range(len(run) - length + 1):
+                    window = run[s:s + length]
+                    seq = [gates[k][0] for k in window]
+                    best = _window_table()[_unitary_key(_seq_matrix(seq))]
+                    if len(best) < length:
+                        new = [(name, (q,)) for name in best]
+                        at = window[0]
+                        out = []
+                        for k in range(n_gates):
+                            if k == at:
+                                out.extend(new)
+                            elif k not in window:
+                                out.append(gates[k])
+                        return out, True
+    return list(gates), False
+
+
+def _stage2_reduce(gates):
+    """Apply commutation cancellation and window rewrites until neither shortens."""
+    gates = list(gates)
+    while True:
+        shorter = _commute_cancel_pass(gates)
+        if len(shorter) < len(gates):
+            gates = shorter
+            continue
+        shorter, changed = _window_pass(gates)
+        if changed and len(shorter) < len(gates):
+            gates = shorter
+            continue
+        return gates
 
 
 def validate_circuit(circuit):

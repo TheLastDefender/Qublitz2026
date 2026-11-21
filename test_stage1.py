@@ -97,10 +97,17 @@ def test_cx_opposite_orientation_not_cancelled():
     assert names(out) == names(c)
 
 
-def test_cx_blocked_by_gate_on_shared_wire():
-    # Z on the control sits between the CXs: needs commutation (Stage 2).
+def test_cx_blocked_by_gate_on_shared_wire_stage1_only():
+    # Stage 1 alone must NOT look past Z0 (that needs commutation).
+    from submission import _stage1_cancel
     c = circ(2, ("CX", 0, 1), ("Z", 0), ("CX", 0, 1))
-    assert names(optimize(c, CFG)) == names(c)
+    assert names(_stage1_cancel(c)) == names(c)
+
+
+def test_cx_blocked_by_gate_on_shared_wire_now_stage2():
+    # Stage 2: Z0 commutes with the CX control, so the CX pair cancels.
+    c = circ(2, ("CX", 0, 1), ("Z", 0), ("CX", 0, 1))
+    assert names(optimize(c, CFG)) == [("Z", (0,))]
 
 
 def test_phase_runs():
@@ -126,8 +133,17 @@ def test_phase_blocked_by_h():
     assert names(optimize(c, CFG)) == names(c)
 
 
-def test_phase_on_cx_wire_not_merged_across_cx():
+def test_phase_on_cx_wire_merged_across_cx_control_stage2():
+    # T0 is diagonal, so it commutes with a CX control: T0 CX01 T0 -> S0 CX01.
     c = circ(2, ("T", 0), ("CX", 0, 1), ("T", 0))
+    out = optimize(c, CFG)
+    assert sorted(names(out)) == sorted([("S", (0,)), ("CX", (0, 1))])
+    assert equivalent_up_to_global_phase(c, out)
+
+
+def test_phase_on_cx_target_not_merged_across_cx():
+    # T1 is on the target: it does not commute with CX, so nothing changes.
+    c = circ(2, ("T", 1), ("CX", 0, 1), ("T", 1))
     assert names(optimize(c, CFG)) == names(c)
 
 
