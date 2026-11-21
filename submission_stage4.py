@@ -21,6 +21,7 @@ This includes a LOCAL checker, not the organizers' private tests.
 
 import copy
 import functools
+import itertools
 import math
 import os
 
@@ -48,9 +49,10 @@ def optimize(circuit, config, beam_width=None):
                                    or not isinstance(beam_width, int) or beam_width < 0):
         raise ValueError("beam_width must be a non-negative integer or None.")
 
-    # Stage 4 (4f): build several candidates, FULLY optimize each with the same
-    # convergent loop, verify each against the input unitary, then pick the
-    # cheapest under `config` (ties broken by a total order, see _key).
+    # Each selection round builds several candidates, fully optimizes each
+    # with the same greedy loop, verifies them against the input unitary,
+    # picks the cheapest under `config` (ties keep the round's input), then
+    # runs beam search from it (see _select).
     n = circuit["n_qubits"]
     original = _as_pairs(circuit)
     reference = _fast_unitary(n, original)   # input unitary, computed once
@@ -58,7 +60,7 @@ def optimize(circuit, config, beam_width=None):
     # Repeat the selection from its own result until it returns its input.
     # That makes optimize(optimize(c)) == optimize(c) exactly: the second call
     # starts from a fixed point (unless the MAX_ROUNDS budget ran out).
-    for _ in range(MAX_ROUNDS):
+    for _ in range(MAX_SELECT_ROUNDS):
         best = _select(n, reference, current, config, beam_width)
         if best == current:
             break
@@ -112,7 +114,8 @@ def _select(n, reference, start, config, beam_width=None):
 
 
 def _stage12(n, gates, legacy=False):
-    """Stages 1-2 iterated to a fixed point (exactly the Stage 2 `optimize`).
+    """Stages 1-2 iterated to a fixed point. With legacy=True this is exactly
+    the Stage 2 `optimize` of submission.py; otherwise the improved Stage 2.
 
     Terminates: Stage 2 returns its input unchanged unless it found a strictly
     shorter circuit, and Stage 1 never lengthens, so each round removes a gate.
@@ -297,19 +300,17 @@ def _seq_matrix(names):
     return u
 
 
-_WINDOW_TABLE = None
-
-
+@functools.lru_cache(maxsize=None)
 def _window_table():
-    """Build the window table on first use (it needs _ONE_QUBIT_MATRICES, defined below)."""
-    global _WINDOW_TABLE
-    if _WINDOW_TABLE is None:
-        _WINDOW_TABLE = _build_window_table(4)
-    return _WINDOW_TABLE
+    """4-gate one-qubit table (float keys), used only by the LEGACY Stage 2
+    path so that it reproduces submission.py exactly. Built on first use."""
+    return _build_window_table(4)
 
 
+@functools.lru_cache(maxsize=None)
 def _commutes(first, second):
-    """Exact check: do two gates commute as operators on their union of qubits?"""
+    """Exact check: do two gates commute as operators on their union of qubits?
+    Cached on the gate pair; the relabelled matrix test below is cached too."""
     union = sorted(set(first[1]) | set(second[1]))
     index = {q: i for i, q in enumerate(union)}
     return _commute_relabelled(
@@ -522,6 +523,12 @@ def _window_table_long():
 
 
 def _best_run(names):
+    """Cached wrapper: identical runs recur across thousands of beam children."""
+    return list(_best_run_cached(tuple(names)))
+
+
+@functools.lru_cache(maxsize=None)
+def _best_run_cached(names):
     """Shortest replacement for a run of one-qubit gates on one wire.
 
     If the run's operator needs at most LONG_WINDOW gates, the table gives
@@ -533,7 +540,7 @@ def _best_run(names):
     table = _window_table_long()
     whole = table.get(_so3_of(names))
     if whole is not None:
-        return list(whole)
+        return tuple(whole)
 
     def split(seq):
         best = [[]]
@@ -546,7 +553,7 @@ def _best_run(names):
     normal = _ma_normal_form(list(names))
     if normal is not None:
         options.append(split(normal))
-    return min(options, key=len)
+    return tuple(min(options, key=len))
 
 
 def _window_pass(gates):
@@ -702,10 +709,11 @@ def _stage2_reduce(gates, legacy=False):
 # runtime; `_BUDGET_HITS` records any loop that stopped because of a cap, and
 # a test asserts that this never happens on the test corpus.
 MAX_ROUNDS = 8          # rounds of the full loop per candidate (work budget)
+MAX_SELECT_ROUNDS = 8   # selection rounds in optimize (work budget)
 MAX_CROSS_MOVES = 64    # accepted cross-region moves per round (work budget)
 BFS_MAX_WIRES = 4       # exact CX-optimal linear synthesis up to this width
 _REGION_GATES = frozenset(("CX", "X", "Z", "S", "SDG", "T", "TDG"))
-_BUDGET_HITS = {"select": 0, "full": 0, "cross": 0, "regions": 0, "beam": 0}
+_BUDGET_HITS = {"select": 0, "full": 0, "cross": 0, "regions": 0, "tblocks": 0, "beam": 0}
 
 # Feature switches, used only by the ablation harness (bench.py) to measure
 # each component's contribution. All are on in normal use.
@@ -716,7 +724,7 @@ FEATURES = {
     # WORSE there (0.725 -> 0.718 of Stage 2 cost when removed), because an
     # immediately-accepted move blocks better later ones. Still used as a
     # beam-search move, where a bad early choice can be abandoned.
-    "cross_regions": False,
+    "cross_regions_greedy": False,
     "pipeline_b": True,
     "fold": True,
     "blocks": True,
@@ -724,7 +732,7 @@ FEATURES = {
     "beam": True,
     # Off in the greedy loop, on as a beam move: measured better that way
     # (w1-heavy 9.51 -> 9.40, balanced 23.43 -> 23.23 on the quick corpus).
-    "tblocks": False,
+    "tblocks_greedy": False,
     "depth_fold": True,
 }
 
@@ -1580,15 +1588,16 @@ def _local_label(gates):
     return (n2, n1, a0, a1)
 
 
-def _clifford_blocks(gates, a, b):
-    """Maximal runs (list order, skipping gates on other wires) of Clifford
-    gates acting only within {a, b}. Yields lists of indices."""
+def _pair_blocks(gates, a, b, clifford_only=False):
+    """Maximal runs (list order, skipping gates on other wires) of gates acting
+    only within {a, b}. With clifford_only, a T/TDG gate also ends a block.
+    Yields lists of indices (blocks of at least 2 gates)."""
     block = []
     for i, (name, qubits) in enumerate(gates):
         touches = [q for q in qubits if q in (a, b)]
         if not touches:
             continue
-        if name in ("T", "TDG") or len(touches) < len(qubits):
+        if (clifford_only and name in ("T", "TDG")) or len(touches) < len(qubits):
             if len(block) >= 2:
                 yield block
             block = []
@@ -1608,7 +1617,7 @@ def _block_pass(n, gates, config):
         base = _key(gates, config)
         for a in range(n):
             for b in range(a + 1, n):
-                for block in _clifford_blocks(gates, a, b):
+                for block in _pair_blocks(gates, a, b, clifford_only=True):
                     local = {a: 0, b: 1}
                     seq = [(gates[i][0], tuple(local[q] for q in gates[i][1])) for i in block]
                     options = table[_cliff2_key(seq)]
@@ -2062,7 +2071,7 @@ def _resynth_t_block(local, config):
     changers = _z_basis_changers()
     odd = [i for i, (_, k) in enumerate(rotations) if k % 2]
     choices = [()] if not odd else (
-        __import__("itertools").product((0, 1), repeat=len(odd))
+        itertools.product((0, 1), repeat=len(odd))
         if len(odd) <= TBLOCK_MAX_CHOICES else [tuple(0 for _ in odd)])
     best = None
     for choice in choices:
@@ -2089,24 +2098,6 @@ def _resynth_t_block(local, config):
     if best is None or _label_cost(_local_label(best), config) >= _label_cost(_local_label(local), config):
         return None
     return best
-
-
-def _pair_blocks(gates, a, b):
-    """Maximal runs (list order, skipping other wires) of gates acting only
-    within {a, b}, T gates included. Yields index lists."""
-    block = []
-    for i, (name, qubits) in enumerate(gates):
-        touches = [q for q in qubits if q in (a, b)]
-        if not touches:
-            continue
-        if len(touches) < len(qubits):
-            if len(block) >= 2:
-                yield block
-            block = []
-        else:
-            block.append(i)
-    if len(block) >= 2:
-        yield block
 
 
 def _t_block_pass(n, gates, config):
@@ -2148,7 +2139,7 @@ def _t_block_pass(n, gates, config):
         if accepted is None:
             return gates
         gates = accepted
-    _BUDGET_HITS["regions"] += 1
+    _BUDGET_HITS["tblocks"] += 1
     return gates
 
 
@@ -2232,8 +2223,10 @@ def _beam_search(n, start, config, beam_width=None):
 # --- the shared, convergent optimization loop (used by every candidate) -------------
 
 def _full_optimize(n, gates, config):
-    """Stages 1-2, phase folding, 4a, 4c, 4d and 2-qubit blocks, repeated until
-    the cost tuple stops dropping."""
+    """The greedy loop used by every candidate: Stages 1-2, phase folding,
+    H-reduction, regions (list and convex) and 2-qubit Clifford blocks, plus
+    any passes switched on in FEATURES, repeated until the cost tuple stops
+    dropping. (Cross-region moves and T-blocks are beam moves by default.)"""
     gates = _stage12(n, gates)
     for _ in range(MAX_ROUNDS):
         g = gates
@@ -2245,11 +2238,11 @@ def _full_optimize(n, gates, config):
             g = _stage12(n, _region_pass(n, g, config))
         if FEATURES["convex_regions"]:
             g = _stage12(n, _convex_region_pass(n, g, config))
-        if FEATURES["cross_regions"]:
+        if FEATURES["cross_regions_greedy"]:
             g = _stage12(n, _cross_region_pass(n, g, config))
         if FEATURES["blocks"]:
             g = _stage12(n, _block_pass(n, g, config))
-        if FEATURES["tblocks"]:
+        if FEATURES["tblocks_greedy"]:
             g = _stage12(n, _t_block_pass(n, g, config))
         if _cost_key(g, config) < _cost_key(gates, config):
             gates = g

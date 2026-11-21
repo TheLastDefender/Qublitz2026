@@ -57,3 +57,43 @@ current critical path, which keeps branching low:
 profiles. Add a depth lower bound for each circuit (the longest single-wire
 gate count of the *optimized* circuit is not a bound; use the exact optimum on
 small circuits instead) to see how far from optimal depth is.
+
+
+## Code review cleanup (after item 8)
+
+**Kept: changes verified to leave every output byte-identical.** 140/140
+corpus outputs matched under all 4 weight profiles, and the run was 33%
+faster (237 s -> 160 s):
+- `_best_run` cached on its gate sequence;
+- `_commutes` cached on the gate pair;
+- one `_pair_blocks` scanner instead of two near-copies;
+- `itertools` imported normally;
+- separate budget label for T-blocks;
+- separate `MAX_SELECT_ROUNDS`;
+- `FEATURES` renamed so that `cross_regions_greedy` and `tblocks_greedy`
+  say what they control;
+- stale docstrings fixed;
+- `lru_cache` instead of a lazy global for the 4-gate table.
+
+**Rejected: removals that looked redundant.** Each was measured on the
+corpus, and none passed the rule that no profile may get worse:
+
+| Removal tried | w2-heavy | balanced | w1-heavy | wd-heavy |
+|---|---|---|---|---|
+| baseline | 39.823 | 23.229 | 9.400 | 7.743 |
+| "B after A" candidate | 39.469 | 23.143 | 9.400 | **7.771** |
+| list-slicing regions | **39.846** | **23.400** | **9.686** | **7.943** |
+| H-reduction | 39.789 | 23.171 | **9.514** | 7.714 |
+| BFS-greedy rebuild, <= 3 wires | 39.806 | 23.143 | **9.429** | 7.657 |
+| Stage 1 in the improved cleanup | **39.857** | **23.486** | 9.371 | **7.943** |
+
+Bold marks a loss. Several removals *help* some profiles while hurting
+another. This is the same sensitivity to equal-cost choices seen earlier, so
+"redundant in theory" does not mean "removable without loss" here.
+
+Also considered and left alone, because removing either would change
+results:
+- **The two original-circuit candidates in `_region_candidates`.** One is
+  untouched; the other is cleaned up and can be better.
+- **The extra cleanup after each pass in the greedy loop.** Some passes do
+  not clean up the joins where they splice pieces together.
