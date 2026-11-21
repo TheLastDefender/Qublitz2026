@@ -601,3 +601,159 @@ def test_C_block_pass_random_exact_and_never_costlier():
             out = s4._block_pass(n, g, cfg)
             assert s4._fast_equivalent(s4._fast_unitary(n, g), n, out)
             assert s4._cost_key(out, cfg) <= s4._cost_key(g, cfg)
+
+
+# =============================================================================
+# Stage 5, step E: exact <=3-wire synthesis, GraySynth, convex regions
+# =============================================================================
+def _random_region_problem(rng, m):
+    rows = [1 << i for i in range(m)]
+    for _ in range(rng.randint(0, 12) if m >= 2 else 0):
+        c, t = rng.sample(range(m), 2)
+        rows[t] ^= rows[c]
+    terms = {y: rng.choice([1, 2, 4, 6, 7])
+             for y in rng.sample(range(1, 1 << m), rng.randint(0, min(8, (1 << m) - 1)))}
+    return rows, rng.randrange(1 << m), terms
+
+
+def _independent_min_cx(m, rows, terms):
+    """Brute force written separately from the implementation under test."""
+    from collections import deque
+    target = tuple(rows)
+    start = tuple(1 << i for i in range(m))
+    need0 = frozenset(y for y in terms if y not in start)
+    seen = {(start, need0)}
+    queue = deque([(start, need0, 0)])
+    while queue:
+        cur, need, d = queue.popleft()
+        if not need and cur == target:
+            return d
+        for c in range(m):
+            for t in range(m):
+                if c != t:
+                    nxt = list(cur)
+                    nxt[t] ^= nxt[c]
+                    nxt = tuple(nxt)
+                    st = (nxt, frozenset(y for y in need if y not in nxt))
+                    if st not in seen:
+                        seen.add(st)
+                        queue.append((nxt, st[1], d + 1))
+
+
+def test_E_exact_small_is_correct_and_minimal():
+    rng = random.Random(80)
+    for _ in range(300):
+        m = rng.choice([1, 2, 3])
+        rows, b, terms = _random_region_problem(rng, m)
+        wires = list(range(m))
+        out = s4._reconstruct_exact_small(rows, b, terms, wires)
+        assert out is not None
+        assert s4._region_canon(out, wires) == (tuple(rows), b, s4._phase_table(m, terms))
+        assert sum(g == "CX" for g, _ in out) == _independent_min_cx(m, rows, terms)
+
+
+def test_E_graysynth_is_correct():
+    rng = random.Random(81)
+    for _ in range(400):
+        m = rng.randint(1, 6)
+        rows, b, terms = _random_region_problem(rng, m)
+        wires = list(range(m))
+        out = s4._reconstruct_graysynth(rows, b, terms, wires)
+        assert out is not None
+        assert s4._region_canon(out, wires) == (tuple(rows), b, s4._phase_table(m, terms))
+
+
+def test_E_gf2_inverse_and_product():
+    rng = random.Random(82)
+    for _ in range(200):
+        m = rng.randint(1, 6)
+        rows, _, _ = _random_region_problem(rng, m)
+        assert s4._gf2_mul(rows, s4._gf2_inv(rows)) == [1 << i for i in range(m)]
+
+
+def test_E_convex_regions_valid():
+    rng = random.Random(83)
+    bad = [P("CX", 0, 1), P("H", 1), P("CX", 1, 0)]
+    assert all(len(r) == 1 for r in s4._convex_regions(bad))   # never merged across H1
+    for _ in range(400):
+        n = rng.randint(1, 5)
+        g = rand_pairs(rng, n, rng.randint(0, 40), ALL)
+        desc, anc = s4._reach_masks(g)
+        seen = set()
+        for region in s4._convex_regions(g):
+            assert not seen & set(region)
+            seen |= set(region)
+            mask = sum(1 << i for i in region)
+            d = a = 0
+            for i in region:
+                d |= desc[i]
+                a |= anc[i]
+                assert g[i][0] != "H"
+            assert not d & a & ~mask                              # convex
+            ordered, s, e = s4._make_contiguous(g, region)
+            assert sorted(ordered[s:e]) == sorted(g[i] for i in region)
+            assert s4._fast_equivalent(s4._fast_unitary(n, g), n, ordered)
+
+
+def test_E_convex_region_pass_exact_and_never_costlier():
+    rng = random.Random(84)
+    for _ in range(200):
+        n = rng.randint(2, 5)
+        g = rand_pairs(rng, n, rng.randint(0, 40), ALL)
+        for cfg in WEIGHTS[:3]:
+            out = s4._convex_region_pass(n, g, cfg)
+            assert s4._fast_equivalent(s4._fast_unitary(n, g), n, out)
+            assert s4._cost_key(out, cfg) <= s4._cost_key(g, cfg)
+
+
+# =============================================================================
+# Stage 5, step F: optimal one-qubit runs, phase-segment summing
+# =============================================================================
+def test_F_best_run_is_optimal_when_optimum_known():
+    rng = random.Random(85)
+    table = s4._window_table_long()
+    assert len(table) == 376
+    for _ in range(1500):
+        seq = [rng.choice(sorted(s4.SINGLE_QUBIT_GATES)) for _ in range(rng.randint(1, 14))]
+        best = s4._best_run(seq)
+        key = s4._unitary_key(s4._seq_matrix(seq))
+        assert s4._unitary_key(s4._seq_matrix(best)) == key
+        assert len(best) <= len(seq)
+        if key in table:
+            assert len(best) == len(table[key])
+
+
+def test_F_phase_segment_pass():
+    # T0 CX01 T0 CX02 T0: CX controls let phases pass -> one segment, k=3.
+    g = [P("T", 0), P("CX", 0, 1), P("T", 0), P("CX", 0, 2), P("T", 0)]
+    out, changed = s4._phase_segment_pass(g)
+    assert changed and E(D(3, g), D(3, out)) and t_count(out) == 1 and len(out) == 4
+    # X on the wire is a blocker for plain summing.
+    assert s4._phase_segment_pass([P("T", 0), P("X", 0), P("T", 0)]) == (
+        [P("T", 0), P("X", 0), P("T", 0)], False)
+    rng = random.Random(86)
+    for _ in range(1000):
+        n = rng.randint(1, 4)
+        g = rand_pairs(rng, n, rng.randint(0, 30), ["T", "S", "Z", "SDG", "TDG", "CX", "H", "X"])
+        out, _ = s4._phase_segment_pass(g)
+        assert s4._fast_equivalent(s4._fast_unitary(n, g), n, out) and len(out) <= len(g)
+
+
+def test_F_legacy_path_reproduces_submission_stage2_exactly():
+    # The legacy Stage 2 result is always a candidate in _select, which is what
+    # makes "never worse than Stage 2" hold by construction.
+    import submission as stage2_module
+    rng = random.Random(87)
+    for _ in range(150):
+        c = _random_circuit(rng)
+        n = c["n_qubits"]
+        legacy = s4._stage12(n, s4._as_pairs(c), legacy=True)
+        assert s4._from_pairs(n, legacy) == stage2_module.optimize(c, CFG)
+
+
+def test_F_segment_placement_does_not_raise_depth():
+    # T on wire 0 around CX controls: placing the merged phase first would add
+    # depth by delaying both CX gates. Depth-aware placement avoids that.
+    g = [P("T", 0), P("CX", 0, 1), P("T", 0), P("CX", 0, 2), P("T", 0)]
+    out, changed = s4._phase_segment_pass(g)
+    assert changed and s4._metrics_pairs(out)[2] <= s4._metrics_pairs(g)[2]

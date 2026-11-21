@@ -72,8 +72,9 @@ def optimize(circuit, config):
 
 def _select(n, reference, start, config):
     """One round of 4f: fully optimize every candidate, verify, pick cheapest."""
-    s2 = _stage12(n, start)                                # Stages 1-2 only
-    candidates = [start, s2]
+    legacy = _stage12(n, start, legacy=True)               # Stage 2 of submission.py
+    s2 = _stage12(n, start)                                # improved Stages 1-2
+    candidates = [start, legacy, s2]
     a = _full_optimize(n, s2, config)                      # Pipeline A
     candidates.append(a)
     if FEATURES["pipeline_b"]:
@@ -94,7 +95,7 @@ def _select(n, reference, start, config):
     return min(verified, key=lambda ic: (_cost_key(ic[1], config), ic[0]))[1]
 
 
-def _stage12(n, gates):
+def _stage12(n, gates, legacy=False):
     """Stages 1-2 iterated to a fixed point (exactly the Stage 2 `optimize`).
 
     Terminates: Stage 2 returns its input unchanged unless it found a strictly
@@ -102,7 +103,7 @@ def _stage12(n, gates):
     """
     gates = _as_pairs(_stage1_cancel(_from_pairs(n, gates)))
     while True:
-        reduced = _stage2_reduce(gates)
+        reduced = _stage2_reduce(gates, legacy)
         if reduced == gates:
             return gates
         gates = _as_pairs(_stage1_cancel(_from_pairs(n, reduced)))
@@ -313,7 +314,7 @@ def _is_phase(name):
     return name in _PHASE_K
 
 
-def _commute_cancel_pass(gates):
+def _commute_cancel_pass(gates, pairwise_phase=False):
     """One sweep: each gate looks forward for a partner it can reach.
 
     Returns a new list. Only ever shorter or equal in length.
@@ -336,8 +337,11 @@ def _commute_cancel_pass(gates):
                 alive[i] = alive[j] = False
                 changed = True
                 break
-            # Partner: phase merge on the same single wire.
-            if (_is_phase(gi[0]) and _is_phase(gj[0]) and gi[1] == gj[1]):
+            # Phase merging is normally done by _phase_segment_pass (whole
+            # segment at once). The LEGACY path keeps the pairwise merge of
+            # submission.py so its result can be reproduced exactly.
+            if (pairwise_phase and _is_phase(gi[0]) and _is_phase(gj[0])
+                    and gi[1] == gj[1]):
                 k = (_PHASE_K[gi[0]] + _PHASE_K[gj[0]]) % 8
                 out = _PHASE_OUT[k]
                 if len(out) <= 1:  # only merge when it strictly shortens
@@ -354,8 +358,112 @@ def _commute_cancel_pass(gates):
     return [cur[k] for k in range(len(cur)) if alive[k]] if changed else list(gates)
 
 
+
+LONG_WINDOW = 7   # one-qubit table depth: 376 distinct unitaries
+
+
+@functools.lru_cache(maxsize=None)
+def _window_table_long():
+    return _build_window_table(LONG_WINDOW)
+
+
+def _best_run(names):
+    """Shortest replacement for a run of one-qubit gates on one wire.
+
+    If the run's total unitary needs at most LONG_WINDOW gates, the table
+    gives the exact optimum for the whole run. Otherwise a dynamic program
+    picks the best split into chunks of at most LONG_WINDOW gates, each
+    replaced by its own optimum: the best set of non-overlapping windows,
+    chosen together rather than greedily.
+    """
+    table = _window_table_long()
+    whole = table.get(_unitary_key(_seq_matrix(names)))
+    if whole is not None:
+        return list(whole)
+    best = [[]]
+    for i in range(1, len(names) + 1):
+        options = []
+        for j in range(max(0, i - LONG_WINDOW), i):
+            chunk = table[_unitary_key(_seq_matrix(names[j:i]))]
+            options.append(best[j] + list(chunk))
+        best.append(min(options, key=len))
+    return best[-1]
+
+
 def _window_pass(gates):
-    """Replace the first improvable one-qubit window. Returns (gates, changed)."""
+    """Replace the first one-qubit run that has a shorter equivalent."""
+    n_gates = len(gates)
+    for q in sorted({w for _, qs in gates for w in qs}):
+        runs, run = [], []
+        for k in range(n_gates):
+            if q not in gates[k][1]:
+                continue
+            if len(gates[k][1]) == 1:
+                run.append(k)
+            else:
+                if len(run) >= 2:
+                    runs.append(run)
+                run = []
+        if len(run) >= 2:
+            runs.append(run)
+        for run in runs:
+            best = _best_run([gates[k][0] for k in run])
+            if len(best) < len(run):
+                drop = set(run)
+                out = []
+                for k in range(n_gates):
+                    if k == run[0]:
+                        out.extend((name, (q,)) for name in best)
+                    elif k not in drop:
+                        out.append(gates[k])
+                return out, True
+    return list(gates), False
+
+
+def _phase_segment_pass(gates):
+    """Sum each wire's phase segments in one go (replaces pairwise merging).
+
+    On wire q, a phase gate commutes with everything on q except H(q), X(q)
+    and a CX TARGETING q. Between two such blockers every phase gate on q can
+    slide next to the first one, so the whole segment is one exponent sum
+    mod 8. Only applied when it strictly shortens the circuit.
+    """
+    n_gates = len(gates)
+    for q in sorted({w for _, qs in gates for w in qs}):
+        segment = []
+        for k in list(range(n_gates)) + [None]:
+            if k is not None and q not in gates[k][1]:
+                continue
+            blocker = (k is None or gates[k][0] in ("H", "X")
+                       or (gates[k][0] == "CX" and gates[k][1][1] == q))
+            if k is not None and gates[k][0] in _PHASE_K:
+                segment.append(k)
+                continue
+            if not blocker:
+                continue                       # CX with q as control: phases pass
+            if len(segment) >= 2:
+                total = sum(_PHASE_K[gates[i][0]] for i in segment) % 8
+                if len(_PHASE_OUT[total]) < len(segment):
+                    # The merged phase may sit at any of the segment's phase
+                    # positions (all equivalent). Gate count is the same at
+                    # each, so pick the lowest depth (ties: earliest).
+                    drop = set(segment)
+                    options = []
+                    for at in segment:
+                        out = []
+                        for i in range(n_gates):
+                            if i == at:
+                                out.extend((name, (q,)) for name in _PHASE_OUT[total])
+                            elif i not in drop:
+                                out.append(gates[i])
+                        options.append(out)
+                    return min(options, key=lambda o: _metrics_pairs(o)[2]), True
+            segment = []
+    return list(gates), False
+
+
+def _window_pass_greedy(gates):
+    """LEGACY (exactly as in submission.py): first improvable 2-4 gate window."""
     n_gates = len(gates)
     for q in sorted({w for _, qs in gates for w in qs}):
         positions = [k for k in range(n_gates) if q in gates[k][1]]
@@ -391,15 +499,25 @@ def _window_pass(gates):
     return list(gates), False
 
 
-def _stage2_reduce(gates):
-    """Apply commutation cancellation and window rewrites until neither shortens."""
+def _stage2_reduce(gates, legacy=False):
+    """Commutation cancellation, phase segments and windows until nothing shortens.
+
+    legacy=True reproduces the Stage 2 of submission.py exactly (pairwise
+    phase merging, greedy 2-4 gate windows). Its result is always one of the
+    candidates in _select, so "never worse than Stage 2" holds by construction.
+    """
     gates = list(gates)
     while True:
-        shorter = _commute_cancel_pass(gates)
+        if not legacy:
+            shorter, changed = _phase_segment_pass(gates)
+            if changed:
+                gates = shorter
+                continue
+        shorter = _commute_cancel_pass(gates, pairwise_phase=legacy)
         if len(shorter) < len(gates):
             gates = shorter
             continue
-        shorter, changed = _window_pass(gates)
+        shorter, changed = (_window_pass_greedy if legacy else _window_pass)(gates)
         if changed and len(shorter) < len(gates):
             gates = shorter
             continue
@@ -428,17 +546,22 @@ MAX_ROUNDS = 8          # rounds of the full loop per candidate (work budget)
 MAX_CROSS_MOVES = 64    # accepted cross-region moves per round (work budget)
 BFS_MAX_WIRES = 4       # exact CX-optimal linear synthesis up to this width
 _REGION_GATES = frozenset(("CX", "X", "Z", "S", "SDG", "T", "TDG"))
-_BUDGET_HITS = {"select": 0, "full": 0, "cross": 0, "beam": 0}
+_BUDGET_HITS = {"select": 0, "full": 0, "cross": 0, "regions": 0, "beam": 0}
 
 # Feature switches, used only by the ablation harness (bench.py) to measure
 # each component's contribution. All are on in normal use.
 FEATURES = {
     "h_reduce": True,
     "regions": True,
-    "cross_regions": True,
+    # Off in the greedy loop: measured (bench.py --ablation) to make results
+    # WORSE there (0.725 -> 0.718 of Stage 2 cost when removed), because an
+    # immediately-accepted move blocks better later ones. Still used as a
+    # beam-search move, where a bad early choice can be abandoned.
+    "cross_regions": False,
     "pipeline_b": True,
     "fold": True,
     "blocks": True,
+    "convex_regions": True,
 }
 
 
@@ -820,8 +943,13 @@ def _region_candidates(n, gates, wires):
         raw.append(_reconstruct_gauss(rows, b, variant, wires))
         if len(wires) <= BFS_MAX_WIRES:
             raw.append(_reconstruct_bfs(rows, b, variant, wires))
+        if len(wires) <= 3:
+            raw.append(_reconstruct_exact_small(rows, b, variant, wires))
+        raw.append(_reconstruct_graysynth(rows, b, variant, wires))
     out = [list(gates)]  # the untouched original: always valid, never empty
     for cand in raw:
+        if cand is None:
+            continue  # a synthesizer that does not apply to this region
         cand = _stage12(n, cand)
         if any(name not in _REGION_GATES for name, _ in cand):
             continue  # cleanup never adds H, but stay strict
@@ -1296,6 +1424,283 @@ def _block_pass(n, gates, config):
     return gates
 
 
+# --- Stage 5 E: better region synthesis and convex regions ----------------------
+
+def _gf2_mul(a, b):
+    """Row-bitmask matrix product a*b over GF(2)."""
+    out = []
+    for row in a:
+        acc = 0
+        k = 0
+        while row:
+            if row & 1:
+                acc ^= b[k]
+            row >>= 1
+            k += 1
+        out.append(acc)
+    return out
+
+
+def _gf2_inv(rows):
+    """Inverse of an invertible row-bitmask matrix over GF(2)."""
+    m = len(rows)
+    a = list(rows)
+    inv = [1 << i for i in range(m)]
+    for j in range(m):
+        r = next(r for r in range(j, m) if (a[r] >> j) & 1)
+        a[j], a[r] = a[r], a[j]
+        inv[j], inv[r] = inv[r], inv[j]
+        for i in range(m):
+            if i != j and (a[i] >> j) & 1:
+                a[i] ^= a[j]
+                inv[i] ^= inv[j]
+    return inv
+
+
+@functools.lru_cache(maxsize=None)
+def _exact_small_paths(m, needed):
+    """Shortest CX sequences (m <= 3 wires) that make every parity in `needed`
+    appear on some wire at some moment, for every final linear map.
+
+    Breadth-first search over (wire contents, parities not yet seen): at most
+    168 x 2^7 = 21,504 states for 3 wires. Returns {final rows: move list}.
+    """
+    from collections import deque
+    moves = [(c, t) for c in range(m) for t in range(m) if c != t]
+
+    def absorb(rows, rem):
+        return frozenset(y for y in rem if y not in rows)
+
+    start_rows = tuple(1 << i for i in range(m))
+    start = (start_rows, absorb(start_rows, needed))
+    parent = {start: None}
+    queue = deque([start])
+    done = {}
+    while queue:
+        state = queue.popleft()
+        rows, rem = state
+        if not rem and rows not in done:
+            done[rows] = state
+        for c, t in moves:
+            nxt = list(rows)
+            nxt[t] ^= nxt[c]
+            nxt = tuple(nxt)
+            child = (nxt, absorb(nxt, rem))
+            if child not in parent:
+                parent[child] = (state, (c, t))
+                queue.append(child)
+    paths = {}
+    for rows, state in done.items():
+        path = []
+        while parent[state] is not None:
+            state, move = parent[state]
+            path.append(move)
+        paths[rows] = tuple(path[::-1])
+    return paths
+
+
+def _emit_along(path, terms, b, wires):
+    """Walk a CX path from the identity; apply each phase the first time its
+    parity sits on a wire (lowest wire first); X gates for b at the end."""
+    m = len(wires)
+    pending = dict(terms)
+    cur = [1 << i for i in range(m)]
+    out = []
+
+    def place():
+        for i in range(m):
+            if cur[i] in pending:
+                out.extend((nm, (wires[i],)) for nm in _PHASE_OUT[pending.pop(cur[i])])
+
+    place()
+    for c, t in path:
+        out.append(("CX", (wires[c], wires[t])))
+        cur[t] ^= cur[c]
+        place()
+    if pending:
+        return None
+    return out + [("X", (wires[i],)) for i in range(m) if (b >> i) & 1]
+
+
+def _reconstruct_exact_small(rows, b, terms, wires):
+    """CX-optimal for this term list (m <= 3): exact search, not greedy."""
+    path = _exact_small_paths(len(wires), frozenset(terms)).get(tuple(rows))
+    return None if path is None else _emit_along(path, terms, b, wires)
+
+
+def _reconstruct_graysynth(rows, b, terms, wires):
+    """GraySynth-style parity network (Amy, Azimzadeh & Mosca, arXiv:1712.01859).
+
+    Parities are tracked in CURRENT-wire coordinates: column y means "XOR of
+    the wires whose bits are set". CX(control j, target i) updates every
+    column by col_j ^= col_i, and a column equal to a single bit e_k means
+    wire k holds that parity, so its phase is applied there. Columns are split
+    recursively on the row that best separates them (Gray-code idea), and each
+    group is collapsed onto one target wire.
+    """
+    m = len(wires)
+    cols = {y: y for y in terms}            # term -> current coordinates
+    cur = [1 << i for i in range(m)]
+    out = []
+
+    def place():
+        for y in sorted(cols):
+            col = cols[y]
+            if col and col & (col - 1) == 0:
+                k = col.bit_length() - 1
+                out.extend((nm, (wires[k],)) for nm in _PHASE_OUT[terms[y]])
+                del cols[y]
+
+    def cx(j, i):
+        out.append(("CX", (wires[j], wires[i])))
+        cur[i] ^= cur[j]
+        for y in cols:
+            if (cols[y] >> i) & 1:
+                cols[y] ^= 1 << j
+
+    place()
+    stack = [(tuple(sorted(terms)), tuple(range(m)), None)]
+    while stack:
+        group, free, target = stack.pop()
+        group = tuple(y for y in group if y in cols)
+        if not group:
+            continue
+        if target is not None:
+            changed = True
+            while changed:
+                changed = False
+                for j in range(m):
+                    if j != target and group and all((cols[y] >> j) & 1 for y in group):
+                        cx(j, target)
+                        place()
+                        group = tuple(y for y in group if y in cols)
+                        changed = True
+                        break
+            if not group:
+                continue
+        if not free:
+            continue
+        j = max(free, key=lambda r: (max(sum((cols[y] >> r) & 1 for y in group),
+                                         sum(1 - ((cols[y] >> r) & 1) for y in group)), -r))
+        rest = tuple(r for r in free if r != j)
+        zeros = tuple(y for y in group if not (cols[y] >> j) & 1)
+        ones = tuple(y for y in group if (cols[y] >> j) & 1)
+        stack.append((zeros, rest, target))
+        stack.append((ones, rest, j if target is None else target))
+    if cols:
+        return None
+    fix = _gf2_mul(list(rows), _gf2_inv(cur))          # M with M * cur = A
+    out += [("CX", (wires[c], wires[t])) for c, t in _linear_ops_gauss(fix)]
+    return out + [("X", (wires[i],)) for i in range(m) if (b >> i) & 1]
+
+
+# --- convex H-free regions ------------------------------------------------------
+
+def _reach_masks(gates):
+    """Descendant and ancestor bitmasks for every gate (wire dependencies)."""
+    count = len(gates)
+    nxt = [[] for _ in range(count)]
+    last = {}
+    for i, (_, qubits) in enumerate(gates):
+        for q in qubits:
+            if q in last and i not in nxt[last[q]]:
+                nxt[last[q]].append(i)
+            last[q] = i
+    desc = [0] * count
+    for i in range(count - 1, -1, -1):
+        for s in nxt[i]:
+            desc[i] |= (1 << s) | desc[s]
+    anc = [0] * count
+    for i in range(count):
+        for s in nxt[i]:
+            anc[s] |= (1 << i) | anc[i]
+    return desc, anc
+
+
+def _convex_regions(gates):
+    """Greedy maximal convex H-free regions (lists of indices, in order).
+
+    A region is convex when no dependency path leaves it and comes back in:
+    no outside gate is both a descendant and an ancestor of region gates.
+    Regions grow from the earliest unassigned non-H gate, adding wire
+    neighbours (before or after) in index order while convexity holds.
+    """
+    import heapq
+    desc, anc = _reach_masks(gates)
+    assigned = [False] * len(gates)
+    neighbours = [set() for _ in gates]
+    for q in sorted({q for _, qs in gates for q in qs}):
+        on_wire = [i for i, (_, qs) in enumerate(gates) if q in qs]
+        for x, y in zip(on_wire, on_wire[1:]):
+            neighbours[x].add(y)
+            neighbours[y].add(x)
+    regions = []
+    for i, (name, _) in enumerate(gates):
+        if assigned[i] or name == "H":
+            continue
+        members, mask, d, a = [i], 1 << i, desc[i], anc[i]
+        assigned[i] = True
+        heap = sorted(neighbours[i])
+        heapq.heapify(heap)
+        while heap:
+            j = heapq.heappop(heap)
+            if assigned[j] or gates[j][0] == "H":
+                continue
+            m2, d2, a2 = mask | (1 << j), d | desc[j], a | anc[j]
+            if d2 & a2 & ~m2:
+                continue
+            members.append(j)
+            mask, d, a = m2, d2, a2
+            assigned[j] = True
+            for k in sorted(neighbours[j]):
+                if not assigned[k]:
+                    heapq.heappush(heap, k)
+        regions.append(sorted(members))
+    return regions
+
+
+def _make_contiguous(gates, region):
+    """Reorder (wire orders kept) so the convex region is one contiguous slice.
+    Returns (new gate list, start, end)."""
+    rset = set(region)
+    _, anc = _reach_masks(gates)
+    region_anc = 0
+    for r in region:
+        region_anc |= anc[r]
+    before = [i for i in range(len(gates)) if i not in rset and (region_anc >> i) & 1]
+    after = [i for i in range(len(gates)) if i not in rset and not (region_anc >> i) & 1]
+    order = before + sorted(region) + after
+    return [gates[i] for i in order], len(before), len(before) + len(region)
+
+
+MAX_REGION_MOVES = 64   # accepted convex-region rewrites per pass (work budget)
+
+
+def _convex_region_pass(n, gates, config):
+    """Rewrite convex H-free regions (made contiguous first) when strictly cheaper."""
+    gates = list(gates)
+    for _ in range(MAX_REGION_MOVES):
+        base = _cost_key(gates, config)
+        accepted = None
+        for region in _convex_regions(gates):
+            if len(region) < 2:
+                continue
+            ordered, s, e = _make_contiguous(gates, region)
+            segment = ordered[s:e]
+            for cand in _region_candidates(n, segment, _wires_of(segment)):
+                full = ordered[:s] + cand + ordered[e:]
+                if _cost_key(full, config) < base and (
+                        accepted is None or _key(full, config) < _key(accepted, config)):
+                    accepted = full
+            if accepted is not None:
+                break
+        if accepted is None:
+            return gates
+        gates = accepted
+    _BUDGET_HITS["regions"] += 1
+    return gates
+
+
 # --- the shared, convergent optimization loop (used by every candidate) -------------
 
 def _full_optimize(n, gates, config):
@@ -1310,6 +1715,8 @@ def _full_optimize(n, gates, config):
             g = _stage12(n, _h_reduce(g, config))
         if FEATURES["regions"]:
             g = _stage12(n, _region_pass(n, g, config))
+        if FEATURES["convex_regions"]:
+            g = _stage12(n, _convex_region_pass(n, g, config))
         if FEATURES["cross_regions"]:
             g = _stage12(n, _cross_region_pass(n, g, config))
         if FEATURES["blocks"]:
