@@ -573,6 +573,9 @@ FEATURES = {
     "blocks": True,
     "convex_regions": True,
     "beam": True,
+    # Off in the greedy loop, on as a beam move: measured better that way
+    # (w1-heavy 9.51 -> 9.40, balanced 23.43 -> 23.23 on the quick corpus).
+    "tblocks": False,
 }
 
 
@@ -1803,18 +1806,185 @@ def _move(gates, drop=(), before=None, after=None, replace=None):
     return out
 
 
-def _improving_moves(n, gates, config):
-    """The composite passes, each applied once to the state (exact)."""
-    return [
-        _phase_fold(gates, "first"),
-        _phase_fold(gates, "last"),
-        _h_reduce(gates, config),
-        _region_pass(n, gates, config),
-        _convex_region_pass(n, gates, config),
-        _cross_region_pass(n, gates, config),   # beam-only: hurts when greedy
-        _block_pass(n, gates, config),
-        _pipeline_b(n, gates),
-    ]
+# --- Stage 6, item 3: two-qubit blocks that contain T gates ---------------------
+#
+# A block on qubits (a, b) with T gates is written exactly as
+#     U = C_final * R_m ... R_1        (rotations act first)
+# where each R_j is a pi/4-multiple rotation about a two-qubit Pauli P_j (the
+# Pipeline B view, restricted to the pair) and C_final is Clifford. Rotations
+# about the same axis merge. Each rotation is rebuilt as  V^dagger, T^k on q,
+# V  with V a Clifford sending Z_q to P_j, so the block becomes
+#     [Clifford] T [Clifford] T ... [Clifford]
+# and every Clifford stretch is replaced by its cheapest implementation from
+# the exact two-qubit Clifford table. The qubit q that carries each T is
+# chosen by trying every combination (up to 2^TBLOCK_MAX_CHOICES).
+
+TBLOCK_MAX_CHOICES = 6
+
+
+def _inverse_gates(gates):
+    inv = {"S": "SDG", "SDG": "S", "T": "TDG", "TDG": "T"}
+    return [(inv.get(g, g), q) for g, q in reversed(gates)]
+
+
+@functools.lru_cache(maxsize=None)
+def _z_basis_changers():
+    """(q, signed Pauli) -> cheapest 2-qubit Clifford circuit V with
+    V Z_q V^dagger = that Pauli. Taken from the exact Clifford table."""
+    out = {}
+    for key, entries in _cliff2_table().items():
+        label, gates = min(entries, key=lambda e: (e[0][0], e[0][1], max(e[0][2:])))
+        for q, image in ((0, key[1]), (1, key[3])):
+            cost = (label[0], label[1])
+            if (q, image) not in out or cost < out[(q, image)][0]:
+                out[(q, image)] = (cost, tuple(gates))
+    return {k: v[1] for k, v in out.items()}
+
+
+def _best_clifford(seq, config):
+    """Cheapest table implementation of a 2-qubit Clifford gate list."""
+    if not seq:
+        return []
+    label, gates = min(_cliff2_table()[_cliff2_key(seq)],
+                       key=lambda e: (_label_cost(e[0], config), e[0]))
+    return list(gates)
+
+
+def _resynth_t_block(local, config):
+    """Exact cheaper rewrite of a 2-qubit gate list (local qubits 0, 1), or None."""
+    rotations, clifford = _to_rotations(local)
+    rotations = _merge_rotations(rotations)
+    changers = _z_basis_changers()
+    odd = [i for i, (_, k) in enumerate(rotations) if k % 2]
+    choices = [()] if not odd else (
+        __import__("itertools").product((0, 1), repeat=len(odd))
+        if len(odd) <= TBLOCK_MAX_CHOICES else [tuple(0 for _ in odd)])
+    best = None
+    for choice in choices:
+        pick = dict(zip(odd, choice))
+        stream = []
+        for i, (p, k) in enumerate(rotations):
+            q = pick.get(i, 0)
+            v = list(changers[(q, p)])
+            stream += _inverse_gates(v)
+            stream += [(name, (q,)) for name in _PHASE_OUT[k]]
+            stream += v
+        stream += clifford
+        out, segment = [], []
+        for g in stream:
+            if g[0] in ("T", "TDG"):
+                out += _best_clifford(segment, config)
+                out.append(g)
+                segment = []
+            else:
+                segment.append(g)
+        out += _best_clifford(segment, config)
+        if best is None or _label_cost(_local_label(out), config) < _label_cost(_local_label(best), config):
+            best = out
+    if best is None or _label_cost(_local_label(best), config) >= _label_cost(_local_label(local), config):
+        return None
+    return best
+
+
+def _pair_blocks(gates, a, b):
+    """Maximal runs (list order, skipping other wires) of gates acting only
+    within {a, b}, T gates included. Yields index lists."""
+    block = []
+    for i, (name, qubits) in enumerate(gates):
+        touches = [q for q in qubits if q in (a, b)]
+        if not touches:
+            continue
+        if len(touches) < len(qubits):
+            if len(block) >= 2:
+                yield block
+            block = []
+        else:
+            block.append(i)
+    if len(block) >= 2:
+        yield block
+
+
+def _t_block_pass(n, gates, config):
+    """Rewrite 2-qubit blocks containing T gates when strictly cheaper."""
+    gates = list(gates)
+    for _ in range(MAX_REGION_MOVES):
+        base = _key(gates, config)
+        accepted = None
+        for a in range(n):
+            for b in range(a + 1, n):
+                for block in _pair_blocks(gates, a, b):
+                    if not any(gates[i][0] in ("T", "TDG") for i in block):
+                        continue   # pure Clifford blocks: handled by _block_pass
+                    local = {a: 0, b: 1}
+                    seq = [(gates[i][0], tuple(local[q] for q in gates[i][1])) for i in block]
+                    new_local = _resynth_t_block(seq, config)
+                    if new_local is None:
+                        continue
+                    if not _fast_equivalent(_fast_unitary(2, seq), 2, new_local):
+                        if _strict():
+                            raise AssertionError("T-block rewrite changed the unitary")
+                        continue
+                    back = {0: a, 1: b}
+                    new = [(g, tuple(back[q] for q in qs)) for g, qs in new_local]
+                    drop = set(block)
+                    out = []
+                    for i, g in enumerate(gates):
+                        if i == block[-1]:
+                            out.extend(new)
+                        elif i not in drop:
+                            out.append(g)
+                    if _key(out, config) < base:
+                        accepted = out
+                        break
+                if accepted:
+                    break
+            if accepted:
+                break
+        if accepted is None:
+            return gates
+        gates = accepted
+    _BUDGET_HITS["regions"] += 1
+    return gates
+
+
+# Whole-pass moves, each applied once to a state. A cheap applicability check
+# skips moves that provably cannot change the circuit (e.g. folding with fewer
+# than two phase gates); the skip is exact, so it never loses a result.
+# (Tried and measured, then removed: (a) applying each pass as a closure so
+# that re-applying it is provably useless and can be skipped; (b) ranking
+# children by their cost after a follow-up block pass. On the bench corpus
+# (a) gave the same results ~45% slower and (b) gave worse results.)
+_PASS_MOVES = (
+    ("fold-first", lambda n, g, c: _phase_fold(g, "first")),
+    ("fold-last", lambda n, g, c: _phase_fold(g, "last")),
+    ("h_reduce", lambda n, g, c: _h_reduce(g, c)),
+    ("regions", lambda n, g, c: _region_pass(n, g, c)),
+    ("convex_regions", lambda n, g, c: _convex_region_pass(n, g, c)),
+    ("cross_regions", lambda n, g, c: _cross_region_pass(n, g, c)),  # beam-only
+    ("blocks", lambda n, g, c: _block_pass(n, g, c)),
+    ("tblocks", lambda n, g, c: _t_block_pass(n, g, c)),
+    ("pipeline_b", lambda n, g, c: _pipeline_b(n, g)),
+)
+
+
+def _pass_applicable(name, gates):
+    """False only when the move provably cannot change the circuit."""
+    names = [g for g, _ in gates]
+    if name.startswith("fold"):
+        return sum(1 for g in names if g in _PHASE_K) >= 2
+    if name == "h_reduce":
+        return "H" in names
+    if name in ("pipeline_b", "tblocks"):
+        return "T" in names or "TDG" in names
+    if name in ("blocks", "cross_regions"):
+        return "CX" in names
+    return len(gates) >= 2
+
+
+def _beam_children(n, state, config):
+    out = [move(n, state, config) for name, move in _PASS_MOVES
+           if _pass_applicable(name, state)]
+    return [_stage12(n, child) for child in out + _local_moves(state)]
 
 
 def _beam_search(n, start, config):
@@ -1827,8 +1997,7 @@ def _beam_search(n, start, config):
     while beam and stale < patience:
         children = []
         for state in beam:
-            for child in _improving_moves(n, state, config) + _local_moves(state):
-                child = _stage12(n, child)
+            for child in _beam_children(n, state, config):
                 key = _canon(child)
                 if key in seen:
                     continue
@@ -1871,6 +2040,8 @@ def _full_optimize(n, gates, config):
             g = _stage12(n, _cross_region_pass(n, g, config))
         if FEATURES["blocks"]:
             g = _stage12(n, _block_pass(n, g, config))
+        if FEATURES["tblocks"]:
+            g = _stage12(n, _t_block_pass(n, g, config))
         if _cost_key(g, config) < _cost_key(gates, config):
             gates = g
         else:

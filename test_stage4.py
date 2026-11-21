@@ -815,3 +815,43 @@ def test_D_canon_identifies_reorderings():
     h = [P("T", 1), P("H", 0), P("CX", 0, 1)]
     assert s4._canon(g) == s4._canon(h)
     assert s4._canon(g) != s4._canon([P("CX", 0, 1), P("H", 0), P("T", 1)])
+
+
+# =============================================================================
+# Stage 6, item 3: two-qubit blocks containing T gates
+# =============================================================================
+def test_T_basis_changers_cover_every_signed_pauli():
+    changers = s4._z_basis_changers()
+    assert len(changers) == 60            # 2 target qubits x 15 Paulis x 2 signs
+    for (q, image), gates in list(changers.items())[::7]:
+        p = (0, 1 << q, 0)
+        for g in gates:
+            p = s4._pauli_forward(p, *g)
+        assert p == image
+
+
+def test_T_block_rewrite_exact_and_cheaper():
+    rng = random.Random(95)
+    found = 0
+    for _ in range(300):
+        seq = rand_pairs(rng, 2, rng.randint(3, 20), ["H", "S", "T", "TDG", "X", "Z", "CX", "CX"])
+        for cfg in (CFG, {"w1": 1.0, "w2": 1.0, "wd": 1.0}):
+            out = s4._resynth_t_block(seq, cfg)
+            if out is None:
+                continue
+            found += 1
+            assert E(D(2, seq), D(2, out))
+            assert s4._label_cost(s4._local_label(out), cfg) < s4._label_cost(s4._local_label(seq), cfg)
+    assert found > 30
+
+
+def test_T_block_pass_random_exact_and_never_costlier():
+    rng = random.Random(96)
+    for _ in range(200):
+        n = rng.randint(2, 4)
+        g = rand_pairs(rng, n, rng.randint(0, 40), ["H", "S", "T", "TDG", "X", "Z", "CX", "CX"])
+        for cfg in WEIGHTS[:3]:
+            out = s4._t_block_pass(n, g, cfg)
+            assert s4._fast_equivalent(s4._fast_unitary(n, g), n, out)
+            assert s4._cost_key(out, cfg) <= s4._cost_key(g, cfg)
+
