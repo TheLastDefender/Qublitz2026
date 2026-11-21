@@ -437,6 +437,8 @@ FEATURES = {
     "regions": True,
     "cross_regions": True,
     "pipeline_b": True,
+    "fold": True,
+    "blocks": True,
 }
 
 
@@ -1094,19 +1096,224 @@ def _pipeline_b(n, gates):
     return _stage12(n, out + clifford)
 
 
+# --- Stage 5 B: phase folding across H gates ----------------------------------
+#
+# Sum-over-paths view (as in T-par, Amy-Maslov-Mosca 2014): describe each
+# wire's value as a parity (XOR) of PATH VARIABLES plus a constant bit. The
+# path variables are the n inputs plus one fresh variable for every H gate.
+#   CX(c,t): value[t] ^= value[c]      X(q): flip value[q]'s constant
+#   H(q):    value[q] = a fresh variable
+# The circuit's amplitudes are a sum over all variable assignments of
+# w^{P}, where P adds k*(parity) for every phase gate T^k (plus terms from
+# the H gates, which folding never touches). P is a SUM, so every phase gate
+# applied to the same parity can be combined into one, applied at any one of
+# their positions: P, and therefore the unitary, is unchanged.
+# A constant bit of 1 means the gate acts on (1 + parity) = k - k*parity, so
+# its contribution to the parity term is -k (the constant k is global phase).
+
+def _phase_fold(gates, host="first"):
+    """Merge all phase gates on the same path-variable parity into one place."""
+    value = {}
+    next_var = 0
+    groups = {}      # parity mask -> [(index, constant bit, signed exponent)]
+    for i, (name, qubits) in enumerate(gates):
+        for q in qubits:
+            if q not in value:
+                value[q] = (1 << next_var, 0)
+                next_var += 1
+        if name == "CX":
+            c, t = qubits
+            value[t] = (value[t][0] ^ value[c][0], value[t][1] ^ value[c][1])
+        elif name == "X":
+            q = qubits[0]
+            value[q] = (value[q][0], value[q][1] ^ 1)
+        elif name == "H":
+            value[qubits[0]] = (1 << next_var, 0)
+            next_var += 1
+        else:  # phase gate
+            mask, const = value[qubits[0]]
+            k = _PHASE_K[name]
+            groups.setdefault(mask, []).append((i, const, -k if const else k))
+    replace = {}
+    drop = set()
+    for occurrences in groups.values():      # insertion order: deterministic
+        if len(occurrences) < 2:
+            continue
+        total = sum(k for _, _, k in occurrences) % 8
+        index, const, _ = occurrences[0] if host == "first" else occurrences[-1]
+        exponent = (-total) % 8 if const else total
+        wire = gates[index][1]
+        replace[index] = [(name, wire) for name in _PHASE_OUT[exponent]]
+        drop.update(i for i, _, _ in occurrences if i != index)
+    out = []
+    for i, gate in enumerate(gates):
+        if i in drop:
+            continue
+        out.extend(replace.get(i, [gate]))
+    return out
+
+
+def _fold_pass(n, gates, config):
+    """Best of {unchanged, fold to first position, fold to last position}."""
+    options = [list(gates)]
+    for host in ("first", "last"):
+        options.append(_stage12(n, _phase_fold(gates, host)))
+    return min(enumerate(options), key=lambda io: (_cost_key(io[1], config), io[0]))[1]
+
+
+# --- Stage 5 C: exact 2-qubit Clifford block resynthesis -----------------------
+#
+# A two-qubit Clifford operation (gates H, S, SDG, X, Z, CX only) is fixed, up
+# to global phase, by where it sends the four Paulis X0, Z0, X1, Z1 (with
+# signs). That gives an EXACT integer key. There are 11,520 such operations.
+# For each one we store every Pareto-optimal implementation in
+# (CX count, one-qubit count, depth of wire 0, depth of wire 1), so the
+# cheapest one can be chosen for any weights.
+
+_CLIFFORD_NAMES = ("H", "S", "SDG", "X", "Z")
+_CLIFF2_GENERATORS = ([(g, (q,)) for g in _CLIFFORD_NAMES for q in (0, 1)]
+                      + [("CX", (0, 1)), ("CX", (1, 0))])
+_PAULI_GENS_2Q = ((1, 0, 0), (0, 1, 0), (2, 0, 0), (0, 2, 0))  # X0, Z0, X1, Z1
+
+
+def _cliff2_key(gates):
+    """Exact key: images of X0, Z0, X1, Z1 under U P U^dagger."""
+    images = []
+    for p in _PAULI_GENS_2Q:
+        for g in gates:
+            p = _pauli_forward(p, *g)
+        images.append(p)
+    return tuple(images)
+
+
+def _key_after(key, gate):
+    """Key of (circuit + gate) from the circuit's key."""
+    return tuple(_pauli_forward(p, *gate) for p in key)
+
+
+def _dominates(a, b):
+    return all(x <= y for x, y in zip(a, b))
+
+
+@functools.lru_cache(maxsize=None)
+def _cliff2_table():
+    """key -> list of (label, gates); label = (n2, n1, depth0, depth1). Pareto."""
+    start = _cliff2_key([])
+    table = {start: [((0, 0, 0, 0), ())]}
+    layer = [(start, (0, 0, 0, 0), ())]
+    while layer:
+        nxt = []
+        for key, (n2, n1, a0, a1), gates in layer:
+            for g in _CLIFF2_GENERATORS:
+                if g[0] == "CX":
+                    top = max(a0, a1) + 1
+                    label = (n2 + 1, n1, top, top)
+                elif g[1] == (0,):
+                    label = (n2, n1 + 1, a0 + 1, a1)
+                else:
+                    label = (n2, n1 + 1, a0, a1 + 1)
+                k2 = _key_after(key, g)
+                entries = table.setdefault(k2, [])
+                if any(_dominates(old, label) for old, _ in entries):
+                    continue
+                entries[:] = [(old, seq) for old, seq in entries if not _dominates(label, old)]
+                entries.append((label, gates + (g,)))
+                nxt.append((k2, label, gates + (g,)))
+        layer = nxt
+    return table
+
+
+def _label_cost(label, config):
+    n2, n1, a0, a1 = label
+    return config["w1"] * n1 + config["w2"] * n2 + config["wd"] * max(a0, a1)
+
+
+def _local_label(gates):
+    a0 = a1 = n1 = n2 = 0
+    for name, qubits in gates:
+        if name == "CX":
+            a0 = a1 = max(a0, a1) + 1
+            n2 += 1
+        elif qubits == (0,):
+            a0 += 1; n1 += 1
+        else:
+            a1 += 1; n1 += 1
+    return (n2, n1, a0, a1)
+
+
+def _clifford_blocks(gates, a, b):
+    """Maximal runs (list order, skipping gates on other wires) of Clifford
+    gates acting only within {a, b}. Yields lists of indices."""
+    block = []
+    for i, (name, qubits) in enumerate(gates):
+        touches = [q for q in qubits if q in (a, b)]
+        if not touches:
+            continue
+        if name in ("T", "TDG") or len(touches) < len(qubits):
+            if len(block) >= 2:
+                yield block
+            block = []
+        else:
+            block.append(i)
+    if len(block) >= 2:
+        yield block
+
+
+def _block_pass(n, gates, config):
+    """Replace 2-qubit Clifford blocks by their cheapest exact implementation."""
+    table = _cliff2_table()
+    gates = list(gates)
+    changed = True
+    while changed:
+        changed = False
+        base = _key(gates, config)
+        for a in range(n):
+            for b in range(a + 1, n):
+                for block in _clifford_blocks(gates, a, b):
+                    local = {a: 0, b: 1}
+                    seq = [(gates[i][0], tuple(local[q] for q in gates[i][1])) for i in block]
+                    options = table[_cliff2_key(seq)]
+                    label, best = min(options, key=lambda e: (_label_cost(e[0], config), e[0]))
+                    if _label_cost(label, config) >= _label_cost(_local_label(seq), config):
+                        continue
+                    back = {0: a, 1: b}
+                    new = [(g, tuple(back[q] for q in qs)) for g, qs in best]
+                    drop = set(block)
+                    out = []
+                    for i, g in enumerate(gates):
+                        if i == block[-1]:
+                            out.extend(new)
+                        elif i not in drop:
+                            out.append(g)
+                    if _key(out, config) < base:
+                        gates = out
+                        changed = True
+                        break
+                if changed:
+                    break
+            if changed:
+                break
+    return gates
+
+
 # --- the shared, convergent optimization loop (used by every candidate) -------------
 
 def _full_optimize(n, gates, config):
-    """Stages 1-2 + 4a + 4c + 4d, repeated until the cost tuple stops dropping."""
+    """Stages 1-2, phase folding, 4a, 4c, 4d and 2-qubit blocks, repeated until
+    the cost tuple stops dropping."""
     gates = _stage12(n, gates)
     for _ in range(MAX_ROUNDS):
         g = gates
+        if FEATURES["fold"]:
+            g = _stage12(n, _fold_pass(n, g, config))
         if FEATURES["h_reduce"]:
             g = _stage12(n, _h_reduce(g, config))
         if FEATURES["regions"]:
             g = _stage12(n, _region_pass(n, g, config))
         if FEATURES["cross_regions"]:
             g = _stage12(n, _cross_region_pass(n, g, config))
+        if FEATURES["blocks"]:
+            g = _stage12(n, _block_pass(n, g, config))
         if _cost_key(g, config) < _cost_key(gates, config):
             gates = g
         else:

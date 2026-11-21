@@ -521,3 +521,83 @@ def test_A_work_budgets_never_reached():
         for cfg in (CFG, {"w1": 1.0, "w2": 0.0, "wd": 0.0}, {"w1": 0.0, "w2": 0.0, "wd": 1.0}):
             s4.optimize(c, cfg)
     assert all(v == 0 for v in s4._BUDGET_HITS.values()), s4._BUDGET_HITS
+
+
+# =============================================================================
+# Stage 5, step B: phase folding across H gates
+# =============================================================================
+def test_B_fold_preserves_unitary_and_never_adds_gates():
+    rng = random.Random(70)
+    for _ in range(1000):
+        n = rng.randint(1, 5)
+        g = rand_pairs(rng, n, rng.randint(0, 40), ALL)
+        for host in ("first", "last"):
+            f = s4._phase_fold(g, host)
+            assert s4._fast_equivalent(s4._fast_unitary(n, g), n, f)
+            assert len(f) <= len(g)
+
+
+def test_B_fold_merges_across_h_gates():
+    # Wire 1 holds x0^x1 for the whole circuit; the H gates act on wire 0.
+    g = [P("CX", 0, 1), P("T", 1), P("H", 0), P("T", 0), P("H", 0),
+         P("CX", 1, 2), P("CX", 1, 2), P("T", 1)]
+    f = s4._phase_fold(g)
+    assert E(D(3, g), D(3, f))
+    assert ("S", (1,)) in f and t_count(f) == 1   # T + T on x0^x1 -> S; T0 stays
+
+
+def test_B_fold_respects_x_sign():
+    # X flips the constant: T on (1 + x0) contributes -1, so T, X, T, X -> I.
+    g = [P("T", 0), P("X", 0), P("T", 0), P("X", 0)]
+    f = s4._stage12(1, s4._phase_fold(g))
+    assert E(D(1, g), D(1, f)) and f == []
+
+
+def test_B_fold_leaves_distinct_parities_alone():
+    g = [P("T", 0), P("CX", 0, 1), P("T", 1), P("H", 0), P("T", 0)]
+    assert s4._phase_fold(g) == g
+
+
+# =============================================================================
+# Stage 5, step C: exact 2-qubit Clifford block resynthesis
+# =============================================================================
+def test_C_table_is_the_two_qubit_clifford_group():
+    table = s4._cliff2_table()
+    assert len(table) == 11520                       # |C2 / U(1)|
+    assert max(min(l[0] for l, _ in v) for v in table.values()) == 3   # <= 3 CX
+    for key, entries in list(table.items())[::37]:
+        labels = [l for l, _ in entries]
+        for label, seq in entries:
+            assert s4._cliff2_key(list(seq)) == key
+            assert s4._local_label(list(seq)) == label
+            assert not any(o != label and s4._dominates(o, label) for o in labels)
+
+
+def test_C_tableau_key_matches_unitary():
+    # Two Clifford circuits have equal keys iff they are equivalent.
+    rng = random.Random(71)
+    for _ in range(400):
+        a = rand_pairs(rng, 2, rng.randint(0, 10), CLIFF)
+        b = s4._stage12(2, a) if rng.random() < 0.5 else rand_pairs(rng, 2, rng.randint(0, 10), CLIFF)
+        assert (s4._cliff2_key(a) == s4._cliff2_key(b)) == E(D(2, a), D(2, b))
+
+
+def test_C_block_pass_known_cases():
+    hrev = [P("H", 0), P("H", 1), P("CX", 0, 1), P("H", 0), P("H", 1)]
+    assert s4._block_pass(2, hrev, CFG) == [P("CX", 1, 0)]
+    swap = [P("CX", 0, 1), P("CX", 1, 0), P("CX", 0, 1)]
+    out = s4._block_pass(2, swap, CFG)
+    assert E(D(2, swap), D(2, out)) and sum(g == "CX" for g, _ in out) == 3  # SWAP needs 3
+    z = [P("CX", 0, 1), P("Z", 1), P("CX", 0, 1)]
+    assert sorted(s4._block_pass(2, z, CFG)) == [P("Z", 0), P("Z", 1)]
+
+
+def test_C_block_pass_random_exact_and_never_costlier():
+    rng = random.Random(72)
+    for _ in range(300):
+        n = rng.randint(2, 4)
+        g = rand_pairs(rng, n, rng.randint(0, 40), ["H", "S", "SDG", "X", "Z", "CX", "CX", "T"])
+        for cfg in WEIGHTS[:4]:
+            out = s4._block_pass(n, g, cfg)
+            assert s4._fast_equivalent(s4._fast_unitary(n, g), n, out)
+            assert s4._cost_key(out, cfg) <= s4._cost_key(g, cfg)
