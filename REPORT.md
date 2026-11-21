@@ -175,7 +175,7 @@ One random 4-qubit circuit under all four benchmark profiles:
 - **Equivalent up to global phase (organizers' checker):** yes
 - **1q / 2q / depth:** 9 / 6 / 11 -> 9 / 6 / 9
 - **Cost:** 47.2 -> 46.8  (1.01 s)
-- **Why:** Still 7 T and 6 CX gates, the known minima (Gosset et al. 2013; Shende & Markov 2008); only the arrangement changed, lowering depth (cost 47.2 -> 46.8).
+- **Why:** Same 15 gates (6 CX, 2 H, 4 T, 3 TDG; the 7 T and 6 CX are the known minima: Gosset et al. 2013, Shende & Markov 2008), but depth 11 -> 9. Pipeline B rebuilds the CCZ core as phases on parities with a different 6-CX network; beam-search moves then slide phase gates into idle slots (e.g. T0 runs alongside the final H2). T-depth stays 4; Amy et al. 2013 reach T-depth 3, which our cost does not target.
 
 ### SWAP
 
