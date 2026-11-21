@@ -49,9 +49,13 @@ Same input and same config give byte-identical output on any machine and any run
   the final selection (Section 4f), not just hoped for.
 
 ### 0.4 Tie-breaking (total order on candidates)
-Compare candidates by this tuple, in this order:
-`(cost, n_2q, depth, n_1q, gate_list_as_tuple)`. The final key is a
-lexicographic tie-break on `((name, qubits), ...)` and makes the order total.
+- **Final selection (4f):** compare `(cost, n_2q, depth, n_1q, candidate index)`.
+  The candidate list is in a fixed order with the round's starting circuit first,
+  so on equal cost the circuit is **left unchanged**. This replaced an earlier
+  gate-tuple tie-break, which let a second `optimize` call swap to a
+  lexicographically smaller circuit of equal cost and broke idempotence.
+- **Inside a pass** (choosing among region rewrites): compare
+  `(cost, n_2q, depth, n_1q, gate_list_as_tuple)`. That is a total order.
 
 ---
 
@@ -294,17 +298,27 @@ candidate and not the default.
 ```
 optimize(circuit, config):
     validate inputs
-    s2 = Stage 1–2 result                                      # verified
-    A  = loop { 4a → 4b → 4c → 4d } until cost stops strictly dropping,
-         at most MAX_ROUNDS_A rounds                           # verified
-    B  = 4e applied to s2, then Stages 1–2                     # verified
-    candidates = [deepcopy(input), s2, A, B] minus any that fail verification
-    return min(candidates, key = 0.4 tuple under config)
+    current = input
+    repeat (at most MAX_ROUNDS):
+        s2 = Stages 1–2 (current)
+        A  = FULL(s2)                  # FULL = loop {Stages 1–2, 4a, 4c, 4d}
+        B  = FULL(4e(s2))              #   until the cost tuple stops dropping
+        AB = FULL(4e(A))
+        best = cheapest of [current, s2, A, B, AB] that passes verification
+               against the ORIGINAL input (ties keep the earliest, i.e. current)
+        if best == current: stop
+        current = best
+    return current
 ```
 
-- `MAX_ROUNDS_A` and all search caps are module constants (work budget, not
-  time). Document their values and why.
-- Optionally also try `A` applied to `B`, as a fifth candidate.
+- **Every candidate is fully optimized before comparison.** All of them go
+  through the same convergent `FULL` loop. An earlier draft gave Pipeline B
+  only a Stages 1–2 cleanup, which could make it lose comparisons it would win
+  once properly cleaned up.
+- **Repeating the selection** until nothing is strictly cheaper makes
+  `optimize(optimize(c)) == optimize(c)` exact, unless the budget runs out.
+- `MAX_ROUNDS` and all search caps are module constants (a work budget, not
+  time).
 - Selection runs per config. Different weights may legitimately pick different
   candidates, and a test must show this happens for at least one circuit.
 
@@ -312,9 +326,8 @@ optimize(circuit, config):
 - **Determinism:** run `optimize` twice in the same process and in a fresh
   subprocess (also with a different `PYTHONHASHSEED`). Outputs are identical.
 - `cost(optimize(c)) <= cost(Stage 2(c))` under 6 configs, on 500 random circuits.
-- `cost(optimize(optimize(c))) <= cost(optimize(c))`. Exact idempotence is a
-  goal, not a requirement, because candidate selection may find more on a
-  second pass. Report how often equality holds.
+- `optimize(optimize(c)) == optimize(c)` exactly. This is guaranteed by the
+  repeat-until-no-strict-improvement loop and the keep-current tie-break.
 - All Stage 1 and Stage 2 tests still pass.
 - Inputs are unchanged, and the output format is valid.
 
@@ -338,9 +351,40 @@ optimize(circuit, config):
 - Ancilla qubits (not allowed by the challenge).
 - Changes to `validate_*`, `circuit_metrics` or `equivalent_up_to_global_phase`.
 
-## References (check before citing in the submission)
-- Nam, Ross, Su, Childs, Maslov (2018): *Automated optimization of large quantum circuits with continuous parameters*. Pipeline structure: H-reduction, rotation merging, cancellation, iterate.
-- Amy, Maslov, Mosca (2014): *Polynomial-time T-depth optimization of Clifford+T circuits via matroid partitioning* (phase-polynomial / T-par).
-- Amy, Azimzadeh, Mosca (2018): *On the CNOT-complexity of CNOT-phase circuits* (GraySynth).
-- Zhang, Chen (2019): *Optimizing T gates in Clifford+T circuit as π/4 rotations around Paulis*.
-- Aaronson, Gottesman (2004): *Improved simulation of stabilizer circuits* (tableau).
+## Implementation notes: where `submission_stage4.py` differs from the text above
+
+Each change keeps the result exact and deterministic. Most make the code simpler.
+
+1. **Canonical terms from the phase table (4b/4c).** Resynthesizing from the
+   built term list missed identities. In Toffoli×2 the merged region is the
+   identity, but its term list was non-empty. `_canonical_terms` derives a unique
+   term list from the table:
+   - a Möbius transform mod 8 gives the AND-monomial form;
+   - each monomial is expanded exactly, using
+     `2^{d-1}·x_{i1}…x_{id} = Σ_{T⊆S, T≠∅} (−1)^{|T|+1} p_T`.
+
+   Both term lists are tried, and every result is checked against the table.
+2. **H-delay ordering (4b).** Before slicing into regions, gates are put in a
+   topological order that postpones H gates as long as possible. Every wire's
+   order is unchanged, so the unitary and all metrics are identical, but the
+   H-free runs get longer.
+3. **Backward-only floating (4d).** A region's terms act on its *input* wires,
+   so a term of R_{i+1} is already a gadget at R_{i+1}'s start. It moves into
+   R_i with no translation. Forward floating (the `(A⁻¹)ᵀ` translation) isn't
+   needed, because any two terms can still meet by moving left.
+4. **Inverse detection is region merging (4d).** If no separating H touches
+   either region, both regions are resynthesized as one. A mutually inverse pair
+   then resynthesizes to nothing.
+5. **No tableau synthesis in Pipeline B (4e).** `C_final` is the input's own
+   Clifford gates in order, with the T gates removed. That's exactly right,
+   because `U = C_final · R_m ⋯ R_1`. The `FULL` loop then optimizes it.
+   Merged rotations with even k are synthesized directly (S/Z/SDG in place of
+   T^k) rather than absorbed. Both are exact, and both avoid a tableau
+   synthesizer whose correctness would need its own proof.
+
+## References (verified)
+- Y. Nam, N. J. Ross, Y. Su, A. M. Childs, D. Maslov, *Automated optimization of large quantum circuits with continuous parameters*, npj Quantum Information **4**, 23 (2018). arXiv:1710.07345. Pipeline structure: H-reduction, rotation merging, cancellation, iterate.
+- M. Amy, D. Maslov, M. Mosca, *Polynomial-time T-depth optimization of Clifford+T circuits via matroid partitioning*, IEEE TCAD **33**(10), 1476–1489 (2014). arXiv:1303.2042. Phase polynomials / T-par.
+- M. Amy, P. Azimzadeh, M. Mosca, *On the CNOT-complexity of CNOT-phase circuits*, arXiv:1712.01859 (2017, rev. 2018). GraySynth.
+- F. Zhang, J. Chen, *Optimizing T gates in Clifford+T circuit as π/4 rotations around Paulis*, arXiv:1903.12456 (2019). Worst case O(n·k²), with k the number of T gates.
+- S. Aaronson, D. Gottesman, *Improved simulation of stabilizer circuits*, Phys. Rev. A **70**, 052328 (2004). arXiv:quant-ph/0406196. Tableau conjugation rules.
