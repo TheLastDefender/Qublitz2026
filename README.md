@@ -457,7 +457,7 @@ baseline:
 - SWAP stays at 3 CX (optimal);
 - a single Toffoli keeps exactly the same 15 gates (6 CX, 2 H, 4 T, 3 TDG), but depth drops from 11 to 9 (cost 47.2 → 46.8):
   - **how:** Toffoli = H·CCZ·H, and CCZ is a phase polynomial over all 7 parities of 3 bits. Pipeline B rebuilds it with a different 6-CX network, and beam-search moves then slide phase gates into idle time slots. No single greedy pass finds this;
-  - **T-depth** stays 4. Amy, Maslov, Mosca & Roetteler (2013) give a Toffoli with T-depth 3, but our cost does not count T-depth, so it is not targeted. We make no claim that depth 9 is new.
+  - **T-depth** stays 4. Amy, Maslov, Mosca & Roetteler (2013) report a Toffoli with T-depth 3 and total depth 9 (from a figure caption; their full paper was not accessible here, so their depth model and CX count are unconfirmed). Ours matches their total depth, but not their T-depth. Our cost does not count T-depth, so it is not targeted. This reproduces a known result; it is not a new one.
 
 **Comparison with Qiskit** (`python compare_qiskit.py`, Qiskit 2.6.2, same
 corpus). Qiskit is credited per circuit with the cheapest valid result among
