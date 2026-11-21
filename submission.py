@@ -40,8 +40,110 @@ def optimize(circuit, config):
     validate_circuit(circuit)
     validate_config(config)
 
-    # TODO: Implement your optimization algorithm here.
-    return copy.deepcopy(circuit)
+    # Stage 1: basic gate cancellation (self-inverse pairs + phase-run merging).
+    return _stage1_cancel(circuit)
+
+
+# --- Stage 1 helpers --------------------------------------------------------
+#
+# Every phase gate is a power of T = diag(1, e^{i*pi/4}): gate = T^k, k mod 8.
+# Powers of T on one wire commute and add, so a whole run collapses to one
+# exponent. T Z T = T^(1+4+1) = T^6 = SDG. A pairwise check never sees this:
+# (T,Z) and (Z,T) don't cancel on their own, and T,T isn't adjacent once Z
+# sits between them. Summing the *run* is what reveals the net exponent.
+_PHASE_K = {"T": 1, "S": 2, "Z": 4, "SDG": 6, "TDG": 7}
+
+# Shortest equivalent gate list for each total exponent k mod 8.
+_PHASE_OUT = {
+    0: [],
+    1: ["T"],
+    2: ["S"],
+    3: ["S", "T"],
+    4: ["Z"],
+    5: ["Z", "T"],
+    6: ["SDG"],
+    7: ["TDG"],
+}
+
+
+def _stage1_cancel(circuit):
+    """Per-wire stack cancellation. Returns a NEW circuit dict.
+
+    One stack per qubit. A stack entry is a tuple
+        (creation_index, payload, qubits)
+    where payload is a gate name ("H", "X", "CX") or, for a phase gate,
+    the integer exponent k (gate = T^k). A CX entry is the *same tuple object*
+    on both its control and target stacks, so `is` tells us two tops are
+    one and the same gate.
+
+    "Adjacent" = nothing between the two gates touches their qubits. That is
+    exactly "the earlier gate is on top of the stack of every wire the later
+    gate uses". Gates on other wires never enter those stacks, so they cannot
+    block a match. Only the top needs checking: a cancellation exposes the
+    entry beneath, and that is checked when the next gate arrives
+    (H0 CX01 CX01 H0 -> I).
+    """
+    n = circuit["n_qubits"]
+    stacks = [[] for _ in range(n)]
+
+    for index, op in enumerate(circuit["gates"]):
+        name = op["gate"]
+
+        if name == "CX":
+            c, t = op["qubits"]
+            top_c = stacks[c][-1] if stacks[c] else None
+            top_t = stacks[t][-1] if stacks[t] else None
+            # Same entry on both tops AND same orientation: CX[0,1] and
+            # CX[1,0] are different gates and must not cancel.
+            if (top_c is not None and top_c is top_t
+                    and top_c[1] == "CX" and top_c[2] == (c, t)):
+                stacks[c].pop()
+                stacks[t].pop()
+            else:
+                entry = (index, "CX", (c, t))
+                stacks[c].append(entry)
+                stacks[t].append(entry)
+            continue
+
+        q = op["qubits"][0]
+        stack = stacks[q]
+        top = stack[-1] if stack else None
+
+        if name in _PHASE_K:
+            k = _PHASE_K[name]
+            if top is not None and isinstance(top[1], int):
+                # Merge into the run: exponents add mod 8. The merged gate
+                # keeps the earlier creation index (it holds the earlier slot).
+                stack.pop()
+                k = (k + top[1]) % 8
+                if k != 0:
+                    stack.append((top[0], k, (q,)))
+                # k == 0: the run cancels entirely, push nothing.
+            else:
+                stack.append((index, k, (q,)))
+        else:  # H or X: self-inverse
+            if top is not None and top[1] == name:
+                stack.pop()
+            else:
+                stack.append((index, name, (q,)))
+
+    # Collect survivors. CX entries sit on two stacks: de-dup by creation index.
+    survivors = {}
+    for stack in stacks:
+        for entry in stack:
+            survivors[entry[0]] = entry
+
+    gates = []
+    for index in sorted(survivors):
+        _, payload, qubits = survivors[index]
+        if isinstance(payload, int):
+            # Phase run: expand the exponent into its shortest gate sequence.
+            for gate_name in _PHASE_OUT[payload]:
+                gates.append({"gate": gate_name, "qubits": [qubits[0]]})
+        else:
+            gates.append({"gate": payload, "qubits": list(qubits)})
+
+    return {"n_qubits": n, "gates": gates}
 
 
 def validate_circuit(circuit):
@@ -219,7 +321,7 @@ if __name__ == "__main__":
     }
     weights = {"w1": 1.0, "w2": 6.0, "wd": 0.2}
     result = optimize(example, weights)
-    print("Your optimizer (initially an unchanged copy):")
+    print("Your optimizer output:")
     print(result)
     print("Local assessment:")
     print(evaluate_optimization(example, result, weights))
