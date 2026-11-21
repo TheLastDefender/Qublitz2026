@@ -31,16 +31,22 @@ SINGLE_QUBIT_GATES = frozenset(("H", "X", "Z", "S", "SDG", "T", "TDG"))
 ALLOWED_GATES = SINGLE_QUBIT_GATES | {"CX"}
 
 
-def optimize(circuit, config):
+def optimize(circuit, config, beam_width=None):
     """Optimizes a quantum circuit to reduce its cost according to the given weights.
 
     Inputs:
         circuit: A dictionary representing the quantum circuit to be optimized.
         config: A dictionary containing the weights for one-qubit gates, two-qubit 
         gates, and circuit depth.
+        beam_width: optional. Circuits kept per beam-search step; None means
+        DEFAULT_BEAM_WIDTH, 0 turns the beam search off. Larger is slower and
+        usually cheaper. The result is deterministic for any given value.
     """
     validate_circuit(circuit)
     validate_config(config)
+    if beam_width is not None and (isinstance(beam_width, bool)
+                                   or not isinstance(beam_width, int) or beam_width < 0):
+        raise ValueError("beam_width must be a non-negative integer or None.")
 
     # Stage 4 (4f): build several candidates, FULLY optimize each with the same
     # convergent loop, verify each against the input unitary, then pick the
@@ -53,7 +59,7 @@ def optimize(circuit, config):
     # That makes optimize(optimize(c)) == optimize(c) exactly: the second call
     # starts from a fixed point (unless the MAX_ROUNDS budget ran out).
     for _ in range(MAX_ROUNDS):
-        best = _select(n, reference, current, config)
+        best = _select(n, reference, current, config, beam_width)
         if best == current:
             break
         current = best
@@ -70,7 +76,7 @@ def optimize(circuit, config):
     return result
 
 
-def _select(n, reference, start, config):
+def _select(n, reference, start, config, beam_width=None):
     """One round of 4f: fully optimize every candidate, verify, pick cheapest."""
     legacy = _stage12(n, start, legacy=True)               # Stage 2 of submission.py
     s2 = _stage12(n, start)                                # improved Stages 1-2
@@ -95,8 +101,8 @@ def _select(n, reference, start, config):
     best = min(verified, key=lambda ic: (_cost_key(ic[1], config), ic[0]))[1]
     # Stage 5 D: beam search from the best greedy result. Accepted only if
     # strictly cheaper AND verified, so it can never make the result worse.
-    if FEATURES["beam"]:
-        beamed = _beam_search(n, best, config)
+    if FEATURES["beam"] and _beam_settings(beam_width)[0] > 0:
+        beamed = _beam_search(n, best, config, beam_width)
         if _cost_key(beamed, config) < _cost_key(best, config):
             if _fast_equivalent(reference, n, beamed):
                 return beamed
@@ -369,35 +375,178 @@ def _commute_cancel_pass(gates, pairwise_phase=False):
 
 
 
-LONG_WINDOW = 7   # one-qubit table depth: 376 distinct unitaries
+# --- Matsumoto-Amano normal form (exact single-qubit Clifford+T) ---------------
+#
+# Matsumoto & Amano (arXiv:0806.3834); streamlined by Giles & Selinger
+# (arXiv:1312.6584). Every single-qubit Clifford+T operator has a UNIQUE
+# normal form: a Clifford, followed by syllables HT or SHT, with an optional
+# T, and it has the minimum possible number of T gates.
+#
+# Exact arithmetic: an operator acts on the Bloch sphere as a 3x3 rotation
+# R (U sigma_j U^dagger = sum_i R[i][j] sigma_i), which forgets global phase
+# exactly. Every entry lies in Z[1/sqrt2], so R = (1/sqrt2)^k * N with N's
+# entries a + b*sqrt2 (integers a, b), stored as (a, b). (a + b sqrt2) is
+# divisible by sqrt2 exactly when a is even: (a + b sqrt2)/sqrt2 = b + (a/2) sqrt2.
+# Reducing k as far as possible gives the "denominator exponent"; the reduced
+# (k, N) is unique, so it is an EXACT key for the operator up to global phase.
+
+def _zr_mul(x, y):
+    return (x[0] * y[0] + 2 * x[1] * y[1], x[0] * y[1] + x[1] * y[0])
+
+
+def _zr_add(x, y):
+    return (x[0] + y[0], x[1] + y[1])
+
+
+def _so3_reduce(k, n):
+    while k > 0 and all(a % 2 == 0 for row in n for a, _ in row):
+        n = tuple(tuple((b, a // 2) for a, b in row) for row in n)
+        k -= 1
+    return k, n
+
+
+def _so3_mul(left, right):
+    """(k1, N1) * (k2, N2) as matrices."""
+    (k1, a), (k2, b) = left, right
+    prod = tuple(tuple(
+        _zr_add(_zr_add(_zr_mul(a[i][0], b[0][j]), _zr_mul(a[i][1], b[1][j])),
+                _zr_mul(a[i][2], b[2][j]))
+        for j in range(3)) for i in range(3))
+    return _so3_reduce(k1 + k2, prod)
+
+
+def _so3_transpose(m):
+    k, n = m
+    return k, tuple(tuple(n[j][i] for j in range(3)) for i in range(3))
+
+
+def _so3_int(rows):
+    return 0, tuple(tuple((v, 0) for v in row) for row in rows)
+
+
+_SO3_GATES = {
+    "H": _so3_int(((0, 0, 1), (0, -1, 0), (1, 0, 0))),
+    "S": _so3_int(((0, -1, 0), (1, 0, 0), (0, 0, 1))),
+    "X": _so3_int(((1, 0, 0), (0, -1, 0), (0, 0, -1))),
+    "Z": _so3_int(((-1, 0, 0), (0, -1, 0), (0, 0, 1))),
+    # T: rotation by pi/4 about Z, entries 1/sqrt2 = (1/sqrt2)^1 * 1, and the
+    # Z-Z entry 1 = (1/sqrt2)^1 * sqrt2.
+    "T": (1, (((1, 0), (-1, 0), (0, 0)), ((1, 0), (1, 0), (0, 0)), ((0, 0), (0, 0), (0, 1)))),
+}
+_SO3_GATES["SDG"] = _so3_transpose(_SO3_GATES["S"])
+_SO3_GATES["TDG"] = _so3_transpose(_SO3_GATES["T"])
+_SO3_ID = _so3_int(((1, 0, 0), (0, 1, 0), (0, 0, 1)))
+
+
+def _so3_of(names):
+    """Exact key of a one-qubit gate list (first gate acts first)."""
+    m = _SO3_ID
+    for name in names:
+        m = _so3_mul(_SO3_GATES[name], m)
+    return m
+
+
+@functools.lru_cache(maxsize=None)
+def _clifford1_table():
+    """Exact key -> shortest gate list, for the 24 one-qubit Cliffords."""
+    table = {_SO3_ID: ()}
+    frontier = [()]
+    while frontier:
+        nxt = []
+        for seq in frontier:
+            for name in ("H", "S", "SDG", "X", "Z"):
+                new = seq + (name,)
+                key = _so3_of(new)
+                if key not in table:
+                    table[key] = new
+                    nxt.append(new)
+        frontier = nxt
+    return table
+
+
+# Syllables as operators, with their gates in TIME order.
+_MA_SYLLABLES = (
+    (("T",), _so3_of(("T",))),
+    (("T", "H"), _so3_of(("T", "H"))),          # operator H*T
+    (("T", "H", "S"), _so3_of(("T", "H", "S"))),  # operator S*H*T
+)
+
+
+def _ma_normal_form(names):
+    """Matsumoto-Amano normal form of a one-qubit gate list (time order).
+
+    Repeatedly strips the syllable (T, HT or SHT) whose removal lowers the
+    denominator exponent; what remains has exponent 0, i.e. is Clifford.
+    Returns the gate list, or None if no syllable reduces (never expected;
+    strict mode raises instead).
+    """
+    m = _so3_of(names)
+    left = []                       # syllables, outermost (latest) first
+    while m[0] > 0:
+        for gates, syl in _MA_SYLLABLES:
+            reduced = _so3_mul(_so3_transpose(syl), m)
+            if reduced[0] < m[0]:
+                left.append(gates)
+                m = reduced
+                break
+        else:
+            if _strict():
+                raise AssertionError("Matsumoto-Amano reduction failed")
+            return None
+    out = list(_clifford1_table()[m])
+    for gates in reversed(left):
+        out += list(gates)
+    return out
+
+
+LONG_WINDOW = 7   # one-qubit table depth: 376 distinct operators
 
 
 @functools.lru_cache(maxsize=None)
 def _window_table_long():
-    return _build_window_table(LONG_WINDOW)
+    """EXACT key (see _so3_of) -> shortest gate list, for every one-qubit
+    operator that needs at most LONG_WINDOW gates. No floating point."""
+    table = {_SO3_ID: ()}
+    frontier = [()]
+    for _ in range(LONG_WINDOW):
+        nxt = []
+        for seq in frontier:
+            for name in _SINGLE_NAMES:
+                new = seq + (name,)
+                key = _so3_of(new)
+                if key not in table:
+                    table[key] = new
+                    nxt.append(new)
+        frontier = nxt
+    return table
 
 
 def _best_run(names):
     """Shortest replacement for a run of one-qubit gates on one wire.
 
-    If the run's total unitary needs at most LONG_WINDOW gates, the table
-    gives the exact optimum for the whole run. Otherwise a dynamic program
-    picks the best split into chunks of at most LONG_WINDOW gates, each
-    replaced by its own optimum: the best set of non-overlapping windows,
-    chosen together rather than greedily.
+    If the run's operator needs at most LONG_WINDOW gates, the table gives
+    the exact optimum. Otherwise a dynamic program splits a sequence into
+    chunks of at most LONG_WINDOW gates, each replaced by its optimum, and
+    this is done both for the run itself and for its Matsumoto-Amano normal
+    form (minimum T count); the shorter result is kept.
     """
     table = _window_table_long()
-    whole = table.get(_unitary_key(_seq_matrix(names)))
+    whole = table.get(_so3_of(names))
     if whole is not None:
         return list(whole)
-    best = [[]]
-    for i in range(1, len(names) + 1):
-        options = []
-        for j in range(max(0, i - LONG_WINDOW), i):
-            chunk = table[_unitary_key(_seq_matrix(names[j:i]))]
-            options.append(best[j] + list(chunk))
-        best.append(min(options, key=len))
-    return best[-1]
+
+    def split(seq):
+        best = [[]]
+        for i in range(1, len(seq) + 1):
+            best.append(min((best[j] + list(table[_so3_of(seq[j:i])])
+                             for j in range(max(0, i - LONG_WINDOW), i)), key=len))
+        return best[-1]
+
+    options = [split(list(names))]
+    normal = _ma_normal_form(list(names))
+    if normal is not None:
+        options.append(split(normal))
+    return min(options, key=len)
 
 
 def _window_pass(gates):
@@ -576,7 +725,17 @@ FEATURES = {
     # Off in the greedy loop, on as a beam move: measured better that way
     # (w1-heavy 9.51 -> 9.40, balanced 23.43 -> 23.23 on the quick corpus).
     "tblocks": False,
+    "depth_fold": True,
 }
+
+
+def _depth_focus(config):
+    """Depth-only moves are used when depth outweighs the gate weights.
+    Measured (bench --quick): depth-placed folding improved wd-heavy
+    (0,0,1) by 2.2% but made balanced (1,1,1) 0.9% worse, because a
+    greedy depth choice can crowd out a gate saving. This rule turns it on
+    for the former and off for the latter; it was chosen from that corpus."""
+    return FEATURES["depth_fold"] and config["wd"] > config["w1"] + config["w2"]
 
 
 def _strict():
@@ -790,13 +949,30 @@ def _region_canon(gates, wires):
     return tuple(rows), b, _phase_table(len(wires), terms)
 
 
+def _parity_tree(support, target):
+    """CX gates that XOR every wire of `support` onto `target`, arranged as a
+    tree of disjoint CX gates: depth ceil(log2 |support|) instead of the
+    ladder's |support| - 1, with the same number of CX gates. Intermediate
+    wires are modified too, so callers undo it with the reversed list."""
+    nodes = [target] + [q for q in support if q != target]
+    out = []
+    while len(nodes) > 1:
+        nxt = []
+        for i in range(0, len(nodes) - 1, 2):
+            out.append(("CX", (nodes[i + 1], nodes[i])))
+            nxt.append(nodes[i])
+        if len(nodes) % 2:
+            nxt.append(nodes[-1])
+        nodes = nxt
+    return out
+
+
 def _gadget(y, c, wires):
     """Gates applying w^{c (y.x)} using wires that currently hold x."""
-    support = [i for i in range(len(wires)) if (y >> i) & 1]
-    target, others = support[0], support[1:]
-    ladder = [("CX", (wires[o], wires[target])) for o in others]
-    phase = [(name, (wires[target],)) for name in _PHASE_OUT[c]]
-    return ladder + phase + ladder[::-1]
+    support = [wires[i] for i in range(len(wires)) if (y >> i) & 1]
+    tree = _parity_tree(support, support[0])
+    phase = [(name, (support[0],)) for name in _PHASE_OUT[c]]
+    return tree + phase + tree[::-1]
 
 
 def _linear_ops_gauss(rows):
@@ -1225,9 +1401,9 @@ def _rotation_gates(n, p, k):
             pre += [("SDG", (q,)), ("H", (q,))]
             post += [("H", (q,)), ("S", (q,))]
     target = support[0]
-    ladder = [("CX", (o, target)) for o in support[1:]]
+    tree = _parity_tree(support, target)
     phase = [(name, (target,)) for name in _PHASE_OUT[k]]
-    return pre + ladder + phase + ladder[::-1] + post
+    return pre + tree + phase + tree[::-1] + post
 
 
 def _pipeline_b(n, gates):
@@ -1278,27 +1454,48 @@ def _phase_fold(gates, host="first"):
             groups.setdefault(mask, []).append((i, const, -k if const else k))
     replace = {}
     drop = set()
+
+    def build():
+        out = []
+        for i, gate in enumerate(gates):
+            if i in drop:
+                continue
+            out.extend(replace.get(i, [gate]))
+        return out
+
     for occurrences in groups.values():      # insertion order: deterministic
         if len(occurrences) < 2:
             continue
         total = sum(k for _, _, k in occurrences) % 8
-        index, const, _ = occurrences[0] if host == "first" else occurrences[-1]
-        exponent = (-total) % 8 if const else total
-        wire = gates[index][1]
-        replace[index] = [(name, wire) for name in _PHASE_OUT[exponent]]
-        drop.update(i for i, _, _ in occurrences if i != index)
-    out = []
-    for i, gate in enumerate(gates):
-        if i in drop:
-            continue
-        out.extend(replace.get(i, [gate]))
-    return out
+        if host == "first":
+            hosts = [occurrences[0]]
+        elif host == "last":
+            hosts = [occurrences[-1]]
+        else:   # "depth": any occurrence may host; keep the lowest depth
+            hosts = occurrences
+        best = None
+        for index, const, _ in hosts:
+            exponent = (-total) % 8 if const else total
+            wire = gates[index][1]
+            replace[index] = [(name, wire) for name in _PHASE_OUT[exponent]]
+            dropped = {i for i, _, _ in occurrences if i != index}
+            drop.update(dropped)
+            depth = _metrics_pairs(build())[2] if len(hosts) > 1 else 0
+            if best is None or depth < best[0]:
+                best = (depth, index, replace[index], dropped)
+            del replace[index]
+            drop.difference_update(dropped)
+        _, index, gates_at_host, dropped = best
+        replace[index] = gates_at_host
+        drop.update(dropped)
+    return build()
 
 
 def _fold_pass(n, gates, config):
     """Best of {unchanged, fold to first position, fold to last position}."""
     options = [list(gates)]
-    for host in ("first", "last"):
+    hosts = ("first", "last", "depth") if _depth_focus(config) else ("first", "last")
+    for host in hosts:
         options.append(_stage12(n, _phase_fold(gates, host)))
     return min(enumerate(options), key=lambda io: (_cost_key(io[1], config), io[0]))[1]
 
@@ -1723,17 +1920,25 @@ def _convex_region_pass(n, gates, config):
 # Every move is an exact identity, every child is cleaned by Stages 1-2, and
 # the result is verified like any other candidate.
 
-# (width, patience, max evaluations). "full" is the production setting,
+# Beam width is a parameter of optimize (beam_width=...). The default was
 # calibrated with bench.py: on the quick corpus, width 16 / patience 5 gave
 # 2.6% lower cost than width 6 / patience 3 at a median of ~0.7 s per call
 # (max ~10 s on the largest circuits), and never hit the evaluation budget.
-# "fast" exists only so the bulk test suites finish in minutes; a dedicated
-# test runs "full". Set with QUBLITZ_BEAM; deterministic either way.
-BEAM_PROFILES = {"full": (16, 5, 16000), "fast": (4, 2, 1000)}
+# The evaluation budget scales with the width. QUBLITZ_BEAM=fast (used only
+# by the bulk test suites, so they finish in minutes) sets width 4,
+# patience 2 when no width is passed; a dedicated test runs the default.
+DEFAULT_BEAM_WIDTH = 16
+BEAM_PATIENCE = 5
+EVALS_PER_WIDTH = 1000
 
 
-def _beam_settings():
-    return BEAM_PROFILES[os.environ.get("QUBLITZ_BEAM", "full")]
+def _beam_settings(width=None):
+    """(width, patience, max evaluations) for a requested width (None = default)."""
+    if width is None:
+        if os.environ.get("QUBLITZ_BEAM") == "fast":
+            return 4, 2, 1000
+        width = DEFAULT_BEAM_WIDTH
+    return width, BEAM_PATIENCE, width * EVALS_PER_WIDTH
 
 
 def _canon(gates):
@@ -1957,6 +2162,7 @@ def _t_block_pass(n, gates, config):
 _PASS_MOVES = (
     ("fold-first", lambda n, g, c: _phase_fold(g, "first")),
     ("fold-last", lambda n, g, c: _phase_fold(g, "last")),
+    ("fold-depth", lambda n, g, c: _phase_fold(g, "depth")),
     ("h_reduce", lambda n, g, c: _h_reduce(g, c)),
     ("regions", lambda n, g, c: _region_pass(n, g, c)),
     ("convex_regions", lambda n, g, c: _convex_region_pass(n, g, c)),
@@ -1967,9 +2173,12 @@ _PASS_MOVES = (
 )
 
 
-def _pass_applicable(name, gates):
-    """False only when the move provably cannot change the circuit."""
+def _pass_applicable(name, gates, config):
+    """False only when the move provably cannot change the circuit, or (for
+    depth-only moves) when depth does not dominate the weights."""
     names = [g for g, _ in gates]
+    if name == "fold-depth" and not _depth_focus(config):
+        return False
     if name.startswith("fold"):
         return sum(1 for g in names if g in _PHASE_K) >= 2
     if name == "h_reduce":
@@ -1983,12 +2192,12 @@ def _pass_applicable(name, gates):
 
 def _beam_children(n, state, config):
     out = [move(n, state, config) for name, move in _PASS_MOVES
-           if _pass_applicable(name, state)]
+           if _pass_applicable(name, state, config)]
     return [_stage12(n, child) for child in out + _local_moves(state)]
 
 
-def _beam_search(n, start, config):
-    width, patience, max_evals = _beam_settings()
+def _beam_search(n, start, config, beam_width=None):
+    width, patience, max_evals = _beam_settings(beam_width)
     best = list(start)
     beam = [best]
     seen = {_canon(best)}

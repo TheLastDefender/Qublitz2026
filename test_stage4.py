@@ -716,8 +716,9 @@ def test_F_best_run_is_optimal_when_optimum_known():
     for _ in range(1500):
         seq = [rng.choice(sorted(s4.SINGLE_QUBIT_GATES)) for _ in range(rng.randint(1, 14))]
         best = s4._best_run(seq)
-        key = s4._unitary_key(s4._seq_matrix(seq))
-        assert s4._unitary_key(s4._seq_matrix(best)) == key
+        key = s4._so3_of(seq)
+        assert s4._so3_of(best) == key
+        assert E(D(1, [(g, (0,)) for g in seq]), D(1, [(g, (0,)) for g in best]))
         assert len(best) <= len(seq)
         if key in table:
             assert len(best) == len(table[key])
@@ -766,7 +767,7 @@ def test_D_full_beam_guarantees(monkeypatch):
     """Production beam settings: equivalent, never worse than Stage 2 or the
     input, idempotent, inputs untouched, budget never reached."""
     import submission as stage2_module
-    monkeypatch.setenv("QUBLITZ_BEAM", "full")
+    monkeypatch.delenv("QUBLITZ_BEAM", raising=False)   # default width
     s4._BUDGET_HITS["beam"] = 0
     rng = random.Random(90)
     for _ in range(12):
@@ -855,3 +856,97 @@ def test_T_block_pass_random_exact_and_never_costlier():
             assert s4._fast_equivalent(s4._fast_unitary(n, g), n, out)
             assert s4._cost_key(out, cfg) <= s4._cost_key(g, cfg)
 
+
+
+def test_D_beam_width_parameter():
+    c = D(3, TOFFOLI)
+    for bad in (-1, 1.5, True, "4"):
+        with pytest.raises(ValueError):
+            s4.optimize(c, CFG, beam_width=bad)
+    rng = random.Random(98)
+    for _ in range(6):
+        c = _random_circuit(rng)
+        off = s4.optimize(c, CFG, beam_width=0)
+        s4.FEATURES["beam"] = False
+        try:
+            assert s4.optimize(c, CFG) == off        # width 0 == beam disabled
+        finally:
+            s4.FEATURES["beam"] = True
+        for w in (0, 2, 6):
+            out = s4.optimize(c, CFG, beam_width=w)
+            assert E(c, out)
+            assert s4.circuit_cost(out, CFG) <= s4.circuit_cost(off, CFG) + 1e-12
+            assert s4.optimize(out, CFG, beam_width=w) == out
+
+
+# =============================================================================
+# Matsumoto-Amano normal form and exact one-qubit keys
+# =============================================================================
+def test_MA_exact_key_matches_unitary():
+    rng = random.Random(100)
+    names = sorted(s4.SINGLE_QUBIT_GATES)
+    same = 0
+    for _ in range(1500):
+        a = [rng.choice(names) for _ in range(rng.randint(0, 12))]
+        b = s4._best_run(a) if rng.random() < 0.5 else [rng.choice(names) for _ in range(rng.randint(0, 12))]
+        equal = E(D(1, [(g, (0,)) for g in a]), D(1, [(g, (0,)) for g in b]))
+        assert (s4._so3_of(a) == s4._so3_of(b)) == equal
+        same += equal
+    assert same > 500
+
+
+def test_MA_normal_form_exact_unique_and_t_optimal():
+    names = sorted(s4.SINGLE_QUBIT_GATES)
+    assert len(s4._clifford1_table()) == 24
+    min_t, form = {}, {}
+    for length in range(0, 5):
+        for seq in itertools.product(names, repeat=length):
+            key = s4._so3_of(seq)
+            nf = tuple(s4._ma_normal_form(list(seq)))
+            assert E(D(1, [(g, (0,)) for g in seq]), D(1, [(g, (0,)) for g in nf]))
+            assert form.setdefault(key, nf) == nf                 # unique
+            t = sum(g in ("T", "TDG") for g in seq)
+            min_t[key] = min(min_t.get(key, 99), t)
+    for key, nf in form.items():
+        assert sum(g == "T" for g in nf) <= min_t[key]            # T-optimal
+
+
+def test_MA_long_runs():
+    rng = random.Random(101)
+    names = sorted(s4.SINGLE_QUBIT_GATES)
+    for _ in range(300):
+        seq = [rng.choice(names) for _ in range(rng.randint(15, 40))]
+        best = s4._best_run(seq)
+        assert s4._so3_of(best) == s4._so3_of(seq) and len(best) <= len(seq)
+
+
+# =============================================================================
+# Depth optimization
+# =============================================================================
+def test_depth_parity_tree_same_count_as_ladder_and_exact():
+    rng = random.Random(110)
+    for _ in range(300):
+        n = rng.randint(2, 6)
+        support = sorted(rng.sample(range(n), rng.randint(1, n)))
+        t = rng.choice(support)
+        tree = s4._parity_tree(support, t)
+        ladder = [("CX", (o, t)) for o in support if o != t]
+        assert len(tree) == len(ladder)
+        assert s4._metrics_pairs(tree + tree[::-1])[2] <= max(1, s4._metrics_pairs(ladder + ladder[::-1])[2])
+        assert E(D(n, tree + [P("T", t)] + tree[::-1]), D(n, ladder + [P("T", t)] + ladder[::-1]))
+
+
+def test_depth_fold_host_exact_and_never_deeper():
+    rng = random.Random(111)
+    for _ in range(400):
+        n = rng.randint(1, 5)
+        g = rand_pairs(rng, n, rng.randint(0, 40), ALL)
+        d = s4._phase_fold(g, "depth")
+        assert s4._fast_equivalent(s4._fast_unitary(n, g), n, d)
+        assert s4._metrics_pairs(d)[2] <= s4._metrics_pairs(s4._phase_fold(g, "first"))[2]
+
+
+def test_depth_focus_follows_weights():
+    assert s4._depth_focus({"w1": 0.0, "w2": 0.0, "wd": 1.0})
+    assert not s4._depth_focus({"w1": 1.0, "w2": 1.0, "wd": 1.0})
+    assert not s4._depth_focus({"w1": 1.0, "w2": 6.0, "wd": 0.2})
