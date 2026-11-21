@@ -10,7 +10,9 @@ Order: lowest work and highest expected gain first. Every item is measured on
 | 3 | 2-qubit blocks containing T | **done** | as a beam move: w1-heavy 9.46 → 9.40, balanced 23.51 → 23.23; w2-heavy unchanged. Hurt when also used greedily, so beam-only. |
 | 4 | Pipeline B: ladder targets chosen by cost | **tried, removed** | B's own output 0.5% cheaper, but end-to-end results identical with fixed targets (wd 7.914, balanced 23.229, w1 9.400): the beam's other moves already recover it. Reverted to keep the code simpler. |
 | 5 | 3-qubit Clifford blocks | pending | high effort; the 3-qubit gap measurement found no misses on small instances |
-| 6 | Depth optimization driven by `wd` | **plan below** | |
+| 6 | Depth optimization driven by `wd` | **done** | wd-heavy 0.616 -> 0.602 of Stage 2 (depth-placed phase folding, used only when wd > w1 + w2; it hurt balanced when always on). Parity trees replace CX ladders (same count, log depth). A depth-optimal CX-network candidate was tried twice and removed: w1-heavy +0.6% but w2-heavy -0.9%, even when restricted to no extra CX, i.e. sensitivity to equal-cost choices, not a robust gain. |
+| 7 | Matsumoto-Amano normal form | **done** | exact one-qubit keys (no float rounding in the long table); unique and T-optimal (tested vs brute force); second split candidate for runs needing > 7 gates. |
+| 8 | `beam_width` parameter | **done** | `optimize(circuit, config, beam_width=None)`: default 16, 0 disables the beam. |
 
 ## Depth optimization plan (item 6)
 
