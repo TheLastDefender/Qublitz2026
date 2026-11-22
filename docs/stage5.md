@@ -58,6 +58,11 @@ of the input.
   Stage 2 differs from `submission.py`, so the guarantee broke (57.6 vs 57.2).
   A legacy path that reproduces `submission.py`'s Stage 2 exactly is now always
   a candidate. A test pins it to the real file.
+  *Update (22 November 2026): the legacy candidate was later removed. It was
+  never cheaper than the improved Stage 2 on the 140-case corpus, and removing
+  it changed 7 outputs, all at equal cost. The guarantee is now checked by
+  tests (`test_4f_never_worse_than_stage2_and_valid`,
+  `test_D_full_beam_guarantees`) instead of holding by construction.*
 
 ## Guarantees (all tested)
 

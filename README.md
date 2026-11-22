@@ -131,16 +131,15 @@ if the final check ever failed, `optimize` would return the input unchanged
    dict.
 
 ### 4.2 One selection round: `_select`
-1. **Build five candidates.** Each is fully optimized by the same greedy loop
+1. **Build four candidates.** The three pipelines all use the same greedy loop
    (`_full_optimize`, §4.13):
 
    | Candidate | What it is |
    |---|---|
-   | the round's input | unchanged |
-   | legacy Stage 2 | reproduces `stage2_baseline.py` exactly, so the result can never be worse than Stage 2 |
-   | improved Stage 2 | Stages 1–2 with this file's improvements |
-   | Pipeline A | the greedy loop applied to the improved Stage 2 result |
-   | Pipeline B, and B applied to A | the Pauli-rotation rewrite (§4.9), then the greedy loop |
+   | the round's input | unchanged, so the result is never costlier than the input |
+   | Pipeline A | Stages 1–2 cleanup, then the greedy loop |
+   | Pipeline B | the Pauli-rotation rewrite (§4.9) of the cleaned input, then the greedy loop |
+   | B after A | Pipeline B applied to A's result, then the greedy loop |
 
 2. **Verify** every candidate against the input unitary.
 3. **Keep the cheapest** under the weights, by
@@ -413,15 +412,15 @@ profiles) unless noted otherwise.
 | **Exact identities only** | The challenge gives no credit for inequivalent output. Exactness also makes every step explainable. |
 | **Deterministic work budgets, not time limits** | Same input, same output on any machine; a time limit would make results depend on machine speed. |
 | **Three verification layers** (§3) | Defence in depth against bugs. 1,455 checks, 0 rejections. Strict mode makes the tests fail loudly. |
-| **Keep the legacy Stage 2 as a candidate** | "Never worse than Stage 2" then holds by construction. A test pins it to `stage2_baseline.py`. |
+| **Candidates: the input, A, B, B after A** | Each pipeline is the only cheapest result in some cases (A 46, B 6, B after A 11 of 140, first round). Two earlier candidates were removed: the improved Stage 1–2 result can never beat A, which starts from it, and the legacy Stage 2 path was never cheaper than it. Removing both changed 7 of 140 outputs, all at equal cost. "Never worse than Stage 2" is now checked by tests against `stage2_baseline.py` rather than holding by construction. |
 | **Segment summing places the merged phase at the lowest-depth position** | Placing it first raised depth from 6 to 8 in a found case. |
 | **Beam search on top of greedy passes** | A 7–10% lower cost than greedy alone. Width 16 vs 6: 2.6% lower cost at about 0.7 s median per call (measured before the caching row below). Width 48 gained only 0.4% more. Runtime is about 2× because exact idempotence needs a confirmation round. |
 | **Cross-region moves and T-blocks: beam-only** | Applied greedily they *hurt* (cross-regions 0.725 → 0.718 of Stage 2 when removed; T-blocks hurt w1-heavy), because an immediately accepted move blocks better later ones. |
 | **Depth placement only when `wd > w1 + w2`** | +2.2% on depth-heavy weights, but −0.9% on balanced weights when always on. This rule was chosen from the benchmark corpus. |
 | **Tables built in code on first use** | About 1.8 s once per process (the two-qubit Clifford table), but nothing is shipped as data and everything is reproducible from code. Only matters if each circuit runs in a fresh process. |
-| **Exact keys for one-qubit tables** (Matsumoto–Amano) | Removes floating-point rounding from decisions. Only the legacy table keeps float keys, to reproduce `stage2_baseline.py`. |
+| **Exact keys for one-qubit tables** (Matsumoto–Amano) | Removes floating-point rounding from decisions. Every table lookup uses exact keys; floats appear only in the commutation test and in verification. |
 | **Tried and removed:** closure-based move skipping, lookahead scoring, Pipeline B ladder-target choice, a depth-optimal CX-network candidate | Measured respectively: same cost ~45% slower; worse cost; no end-to-end change; +0.6% w1-heavy but −0.9% w2-heavy even at equal CX count. |
-| **Kept although they look redundant:** list regions, H-reduction, "B after A", the BFS-greedy rebuild for ≤ 3 wires, Stage 1 inside the improved path | Removing each one made at least one weight profile worse. Equal-cost choices change which later improvements are reachable. |
+| **Kept although they look redundant:** list regions, H-reduction, "B after A", the BFS-greedy rebuild for ≤ 3 wires, Stage 1 inside the Stage 1–2 cleanup | Removing each one made at least one weight profile worse. Equal-cost choices change which later improvements are reachable. |
 | **Caching** (`_best_run`, `_commutes`; later `_region_candidates`, `_resynth_t_block`) | 33% faster, then a further ~1.6× (beam states share most regions and blocks), each time with all 140 benchmark outputs byte-identical. |
 
 ---
@@ -520,7 +519,7 @@ The development history, with per-step measurements, is in `docs/`
 python -m pytest test_stage1.py test_stage2.py test_stage4.py -q
 ```
 
-That runs 121 tests in about 7 minutes. `conftest.py` turns on strict
+That runs 120 tests in about 7 minutes. `conftest.py` turns on strict
 mode, and uses a reduced beam for the bulk tests;
 `test_D_full_beam_guarantees` runs the production beam.
 
