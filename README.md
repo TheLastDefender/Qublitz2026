@@ -395,7 +395,7 @@ Full references are in §12.
 | **Stabilizer tableau update rules** [Aaronson & Gottesman 2004] | `_pauli_forward`, `_pauli_backward`, `_cliff2_key` | The conjugation rules for H, S and CX on Pauli strings, including the sign rule for CX. |
 | **Matsumoto–Amano normal form** [Matsumoto & Amano 2008; Giles & Selinger 2013] | `_ma_normal_form`, `_so3_of` | Uniqueness and T-optimality of the normal form (Clifford, then HT/SHT syllables, with an optional T). We implemented the reduction by stripping, in exact SO(3) arithmetic, the syllable that lowers the denominator exponent. |
 | **Beam search** [Lowerre 1976] | `_beam_search` | Keep the best *k* partial solutions at each step. Our moves, deduplication and budget are our own. |
-| Breadth-first search; Gauss–Jordan elimination over GF(2); Möbius transform on subsets; Pareto (multi-objective) labels; dependency-graph convexity | `_linear_bfs`, `_exact_small_paths`, `_cliff2_table`, `_build_window_table`, `_window_table_long`, `_linear_ops_gauss`, `_canonical_terms`, `_convex_regions` | Standard textbook techniques, implemented here. |
+| Breadth-first search; Gauss–Jordan elimination over GF(2); Möbius transform on subsets; Pareto (multi-objective) labels; dependency-graph convexity | `_linear_bfs`, `_exact_small_paths`, `_cliff2_table`, `_window_table_long`, `_linear_ops_gauss`, `_canonical_terms`, `_convex_regions` | Standard textbook techniques, implemented here. |
 | Organizers' starter code | end of both `.py` files | `validate_circuit`, `validate_config`, `circuit_unitary`, `equivalent_up_to_global_phase`, `circuit_metrics`, `circuit_cost`, `evaluate_optimization`: unchanged. |
 
 Facts quoted in this README: the 7-T Toffoli is T-optimal without ancillae
@@ -418,7 +418,7 @@ profiles) unless noted otherwise.
 | **Three verification layers** (§3) | Defence in depth against bugs. 1,455 checks, 0 rejections. Strict mode makes the tests fail loudly. |
 | **Candidates: the input, A, B, B after A, A on the given listing** | Each of A, B and B after A is the only cheapest result in some cases (A 46, B 6, B after A 11 of 140, first round). The fifth candidate exists because the fewest-regions reordering helps some weights and hurts others (replacing it outright: −2.0% w2-heavy but +2.4% w1-heavy); as an extra candidate it changed no profile for the worse (−0.2% w2-heavy, −1.1% balanced, −0.3% w1-heavy, 0 wd-heavy). Choosing the listing by cost after the region pass alone, and alternative pass orders, were tested and were worse. Two earlier candidates were removed: the improved Stage 1–2 result can never beat A, which starts from it, and the legacy Stage 2 path was never cheaper than it. Removing both changed 7 of 140 outputs, all at equal cost. "Never worse than Stage 2" is now checked by tests against `stage2_baseline.py` rather than holding by construction. |
 | **Segment summing places the merged phase at the lowest-depth position** | Placing it first raised depth from 6 to 8 in a found case. |
-| **Beam search on top of greedy passes** | A 7–10% lower cost than greedy alone. Width 16 vs 6: 2.6% lower cost at about 0.7 s median per call (measured before the caching row below). Width 48 gained only 0.4% more. Runtime is about 2× because exact idempotence needs a confirmation round. |
+| **Beam search on top of greedy passes** | Without it, mean cost rises 6–12% (table in §8). Width 16 vs 6: 2.6% lower cost at about 0.7 s median per call (measured before the caching row below). Width 48 gained only 0.4% more. Runtime is about 2× because exact idempotence needs a confirmation round. |
 | **Cross-region moves and T-blocks: beam-only** | Applied greedily they *hurt* (cross-regions 0.725 → 0.718 of Stage 2 when removed; T-blocks hurt w1-heavy), because an immediately accepted move blocks better later ones. |
 | **Depth placement only when `wd > w1 + w2`** | +2.2% on depth-heavy weights, but −0.9% on balanced weights when always on. This rule was chosen from the benchmark corpus. |
 | **Tables built in code on first use** | About 1.8 s once per process (the two-qubit Clifford table), but nothing is shipped as data and everything is reproducible from code. Only matters if each circuit runs in a fresh process. |
@@ -446,13 +446,38 @@ baseline:
 | one-qubit only (1, 0, 0) | 0.396 | 0.678 |
 | depth only (0, 0, 1) | 0.380 | 0.602 |
 
-**Optimality on small circuits** (exhaustive search for the true minimum):
+**Optimality on small circuits** (exhaustive search for the true minimum;
+gate-count weights; `bench.optimality_gap` and `bench.optimality_gap_3q`):
 
-| Circuits | Optimal |
+| Circuits | Exactly optimal |
 |---|---|
-| 2-qubit, optimum ≤ 4 gates | 99.8% (1037/1039) |
-| 3-qubit, optimum ≤ 4 gates | 123/124 (measured before the fifth candidate was added) |
-| 3-qubit, optimum 5 gates | 200/200 (measured before the fifth candidate was added) |
+| 2-qubit, optimum ≤ 4 gates (random circuits of 6–16 gates) | 99.8% (1037/1039); the other 2 are 1 gate over |
+| 3-qubit, optimum ≤ 4 gates (random circuits of 5–10 gates) | 400/400, including 222/222 with optimum exactly 4 |
+| 3-qubit, optimum exactly 5 (random 5-gate circuits outside the ≤ 4 table) | 200/200 |
+
+The 3-qubit search enumerates all 45,632 unitaries that need at most 4 gates.
+
+**What each step contributes** (`python bench.py --quick --ablation`: change
+in mean cost when the step is removed everywhere it runs — greedy loop,
+candidates and beam moves):
+
+| Removed | CX-heavy | balanced | one-qubit | depth |
+|---|---|---|---|---|
+| beam search | +6.4% | +8.6% | +9.1% | +11.8% |
+| beam local moves | +5.6% | +7.5% | +8.2% | +9.6% |
+| Clifford blocks | +6.8% | +3.0% | +6.4% | +3.7% |
+| list regions | +0.2% | +1.9% | +3.4% | +3.0% |
+| convex regions | +1.6% | +0.6% | +1.2% | −0.4% |
+| Pipeline B | +0.2% | −0.7% | +0.6% | +0.4% |
+| phase folding | +0.3% | +0.2% | +0.0% | +0.4% |
+| depth placement | 0 | 0 | 0 | +0.4% |
+| cross-region moves | 0 | +0.1% | 0 | +0.4% |
+| T-blocks | +0.1% | +0.1% | +0.3% | 0 |
+| H-reduction | −0.1% | −0.2% | +1.2% | 0 |
+
+Every step helps at least one profile. Pipeline B, H-reduction and convex
+regions help under some weights and cost a little under others; with 35
+circuits per profile those differences are a few circuits, so all are kept.
 
 **Known cases** (all pinned by tests):
 - the guidelines' example: `CX01 Z0 CX01 → Z0`, cost 13.6 → 1.2;
@@ -487,8 +512,8 @@ checked with the organizers' equivalence function, and all were equivalent:
   against a Clifford+T-specialized optimizer.
 
 **Runtime:** median about 0.3–0.5 s per circuit (up to 60 gates, 6 qubits;
-0.27–0.54 s depending on the weight profile), and up to about 4–5 s on the
-largest benchmark circuits. Add about 1.8 s for the Clifford table on the
+0.27–0.55 s depending on the weight profile), and up to about 3–4.5 s on the
+largest benchmark circuits. Add about 1.7–1.8 s for the Clifford table on the
 first multi-qubit call in a process. Cost grows roughly linearly with
 beam width, and with gates × moves per beam step.
 

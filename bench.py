@@ -5,7 +5,9 @@ Run:  python bench.py            (full corpus)
       python bench.py --ablation (also switch each feature off in turn)
 
 Reports, per weight profile, the mean cost of input / Stage 2 / Stage 4 and
-the runtime, plus the gap to the exact optimum on small 2-qubit circuits.
+the runtime, plus the gap to the exact optimum on small 2- and 3-qubit
+circuits. --ablation removes one step at a time EVERYWHERE it runs (greedy
+loop, candidate list and beam-search moves), not just its FEATURES switch.
 Deterministic: fixed seeds throughout.
 """
 import random
@@ -134,17 +136,115 @@ def optimality_gap(samples=3000, max_len=4):
           f" gap distribution: {dict(sorted(gaps.items()))}")
 
 
+# Each ablation step: the FEATURES switches it turns off and the beam-search
+# moves it removes. A switch alone only affects the greedy loop / candidates,
+# so the beam would still apply the step and the ablation would understate it.
+ABLATION_STEPS = {
+    "fold": (["fold"], ["fold-first", "fold-last", "fold-depth"]),
+    "depth_fold": (["depth_fold"], []),
+    "h_reduce": (["h_reduce"], ["h_reduce"]),
+    "regions": (["regions"], ["regions"]),
+    "convex_regions": (["convex_regions"], ["convex_regions"]),
+    "cross_regions": ([], ["cross_regions"]),
+    "blocks": (["blocks"], ["blocks"]),
+    "tblocks": ([], ["tblocks"]),
+    "pipeline_b": (["pipeline_b"], ["pipeline_b"]),
+    "local_moves": ([], []),       # special: _local_moves returns nothing
+    "beam": (["beam"], []),
+}
+
+
+def run_without(step, circuits):
+    """evaluate() with one step removed everywhere; restores the module after."""
+    features, moves = ABLATION_STEPS[step]
+    saved = (dict(s4.FEATURES), s4._PASS_MOVES, s4._local_moves)
+    names = {name for name, _ in s4._PASS_MOVES}
+    assert all(f in s4.FEATURES for f in features) and all(m in names for m in moves), step
+    try:
+        for f in features:
+            s4.FEATURES[f] = False
+        s4._PASS_MOVES = tuple(m for m in s4._PASS_MOVES if m[0] not in moves)
+        if step == "local_moves":
+            s4._local_moves = lambda gates: []
+        return evaluate(circuits)
+    finally:
+        s4.FEATURES.clear(); s4.FEATURES.update(saved[0])
+        s4._PASS_MOVES, s4._local_moves = saved[1], saved[2]
+
+
+def _key_batch(mats):
+    """Global-phase-free keys (rounded) for a stack of unitaries, one per row."""
+    flat = mats.reshape(len(mats), -1)
+    pivot = np.argmax(np.abs(flat) > 1e-9, axis=1)
+    phase = flat[np.arange(len(flat)), pivot]
+    norm = np.round(flat / (phase / np.abs(phase))[:, None], 6) + 0.0   # +0.0: no -0.0
+    return [row.tobytes() for row in norm]
+
+
+def optimality_gap_3q(samples=400, at_five=200, max_len=4):
+    """Exact optimality on 3-qubit circuits.
+
+    Breadth-first search gives the minimum gate count of every 3-qubit
+    unitary reachable with <= max_len gates (27 generators). Then:
+      (a) random 3-qubit circuits of 5-10 gates whose unitary is in that table
+          (true optimum <= 4): compare optimize()'s gate count to the optimum;
+      (b) random 5-gate circuits whose unitary is NOT in the table: their
+          optimum is exactly 5, so the output must have 5 gates.
+    Gate-count weights (1, 1, 0). Deterministic seeds.
+    """
+    n = 3
+    gens = ([(g, (q,)) for g in sorted(s4.SINGLE_QUBIT_GATES) for q in range(n)]
+            + [("CX", (c, t)) for c in range(n) for t in range(n) if c != t])
+    gmats = np.array([s4._fast_unitary(n, [g]) for g in gens])
+    best = {_key_batch(np.eye(8, dtype=complex)[None])[0]: 0}
+    frontier = np.eye(8, dtype=complex)[None]
+    for length in range(1, max_len + 1):
+        new = []
+        for gm in gmats:
+            cand = np.einsum("ij,njk->nik", gm, frontier)
+            for k, m in zip(_key_batch(cand), cand):
+                if k not in best:
+                    best[k] = length
+                    new.append(m)
+        frontier = np.array(new)
+    cfg = {"w1": 1.0, "w2": 1.0, "wd": 0.0}
+    pool = sorted(s4.ALLOWED_GATES)
+    rng = random.Random(33)
+    gaps, gaps4 = Counter(), Counter()
+    while sum(gaps.values()) < samples:
+        g = _rand(rng, n, rng.randint(5, 10), pool)
+        k = _key_batch(s4._fast_unitary(n, g)[None])[0]
+        if k in best:
+            out = s4.optimize(s4._from_pairs(n, g), cfg)
+            gap = len(out["gates"]) - best[k]
+            gaps[gap] += 1
+            if best[k] == 4:
+                gaps4[gap] += 1
+    rng = random.Random(55)
+    gaps5 = Counter()
+    while sum(gaps5.values()) < at_five:
+        g = _rand(rng, n, 5, pool)
+        if len(g) == 5 and _key_batch(s4._fast_unitary(n, g)[None])[0] not in best:
+            gaps5[len(s4.optimize(s4._from_pairs(n, g), cfg)["gates"]) - 5] += 1
+    print(f"\nOptimality, 3-qubit circuits (gate-count weights; {len(best)} unitaries need <= {max_len} gates):")
+    for label, c in ((f"optimum <= {max_len}", gaps), (f"optimum exactly {max_len}", gaps4),
+                     (f"optimum exactly {max_len + 1}", gaps5)):
+        t = sum(c.values())
+        print(f"  {label}: exactly optimal {c[0]}/{t}; gap distribution {dict(sorted(c.items()))}")
+    return gaps, gaps4, gaps5
+
+
 def main():
     quick = "--quick" in sys.argv
     circuits = corpus(8 if quick else 20)
     print(f"corpus: {len(circuits)} circuits")
     print_rows("All features on", evaluate(circuits))
     optimality_gap(1500 if quick else 3000)
+    if not quick:
+        optimality_gap_3q()
     if "--ablation" in sys.argv:
-        for feature in list(s4.FEATURES):
-            s4.FEATURES[feature] = False
-            print_rows(f"Without {feature}", evaluate(circuits))
-            s4.FEATURES[feature] = True
+        for step in ABLATION_STEPS:
+            print_rows(f"Without {step} (removed everywhere)", run_without(step, circuits))
     if any(s4._BUDGET_HITS.values()):
         print("\nWARNING: work budget reached:", s4._BUDGET_HITS)
 
