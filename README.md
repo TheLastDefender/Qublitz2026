@@ -523,13 +523,18 @@ the organizers' equivalence check.
 | | depth | 146.0 | 146.0 | 146.0 | 146.0 | **119.0** |
 
 - **Result:** ours is strictly cheapest against Qiskit in 16 of 16 cases,
-  against PyZX in 15 of 16, and against the best published version in 14 of 16.
-  The exceptions are all one-qubit-only weights: Nam et al. and Feynman on
-  `tof_3` and `barenco_tof_3`, and PyZX on `mod5_4`.
+  against PyZX in 15 of 16, and against the published versions listed above in
+  14 of 16. The exceptions are all one-qubit-only weights: Nam et al. and
+  Feynman on `tof_3` and `barenco_tof_3`, and PyZX on `mod5_4`.
 - **In standard measures** (our output under (1, 6, 0.2)): CX 13, 16, 13 and
-  39, against the best published 14, 18, 26 and 45 (PyZX run live reaches 14
-  on `mod5_4`); T-count 15, 16, 8 and 67, equal to the best of any source; we
-  do not target T at all.
+  39, against 14, 18, 26 and 45 for the best of those published versions
+  (PyZX run live reaches 14 on `mod5_4`); T-count 15, 16, 8 and 67, equal to the
+  lowest among them; we do not target T at all.
+- **Scope of the "published" column:** it covers only the optimized versions
+  distributed with PyZX, from 2014–2018 (Nam et al., T-par, Feynman, PyZX's
+  stored result). Newer optimizers (for example VOQC, Quartz, QUESO) report
+  results on these circuits that were not compared, and none of the published
+  tools optimizes our weighted cost, so this is not a state-of-the-art claim.
 - **Speed:** PyZX and Qiskit take well under a second per circuit; we take
   1–4 s on the three Toffoli-based circuits and 17–30 s on the 179-gate `qft_4`,
   three times the size of our own benchmark circuits.

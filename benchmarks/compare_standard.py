@@ -187,7 +187,7 @@ def compare():
         for label, outs in (("PyZX", pz), ("Qiskit", qk)):
             for o in outs:
                 print(f"   {label:7s} output: {summary(o)}")
-        print(f"   {'weights':20s} {'input':>8s} {'PyZX best':>10s} {'Qiskit best':>12s} {'published best':>15s} {'ours':>8s}   ours")
+        print(f"   {'weights':20s} {'input':>8s} {'PyZX best':>10s} {'Qiskit best':>12s} {'published':>15s} {'ours':>8s}   ours")
         for profile, cfg in bench.PROFILES.items():
             base = circuit_cost(c, cfg)
             best_pz = min([base] + [circuit_cost(o, cfg) for o in pz])
@@ -206,7 +206,7 @@ def compare():
             print(f"   {profile:20s} {base:8.1f} {best_pz:10.1f} {best_qk:12.1f} {best_pub:15.1f} {ours:8.1f}   "
                   f"{summary(out)} ({secs:.1f} s)")
     print(f"\nOurs strictly cheapest: vs PyZX in {wins['PyZX']}/{cases} cases, "
-          f"vs Qiskit in {wins['Qiskit']}/{cases} cases, vs the best published version in "
+          f"vs Qiskit in {wins['Qiskit']}/{cases} cases, vs the published versions in benchmarks/circuits in "
           f"{wins['published']}/{cases} cases (tied in {ties['published']}).")
 
 
