@@ -2148,7 +2148,9 @@ def _full_optimize(n, gates, config, reorder_regions=True):
     """The greedy loop used by every candidate: Stages 1-2, phase folding,
     H-reduction, regions (list and convex) and 2-qubit Clifford blocks, plus
     any passes switched on in FEATURES, repeated until the cost tuple stops
-    dropping. (Cross-region moves and T-blocks are beam moves by default.)"""
+    dropping. (Cross-region moves and T-blocks are beam moves by default.)
+    reorder_regions=False makes the list region pass keep the given listing
+    instead of reordering for the fewest regions (the fifth candidate)."""
     gates = _stage12(n, gates)
     for _ in range(MAX_ROUNDS):
         g = gates

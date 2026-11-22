@@ -202,7 +202,9 @@ a basis state as
 
 **Finding regions,** two ways:
 - **List slicing:** cut at H gates, after choosing whichever of three
-  wire-order-preserving orderings gives the fewest regions.
+  wire-order-preserving orderings gives the fewest regions. The fifth
+  selection candidate (§4.2) runs the greedy loop once more with this
+  reordering switched off, because neither choice is best for all weights.
 - **Convex regions:** grown greedily over the gate dependency graph. A region
   must be *convex*: no dependency path may leave it and come back in. That is
   checked with ancestor and descendant bitmasks. The region is then made
@@ -314,7 +316,8 @@ maximum is 2 improving rounds):
 1. Stages 1–2;
 2. phase folding;
 3. H-reduction;
-4. list regions;
+4. list regions (reordered for the fewest regions, or as listed for the
+   fifth candidate);
 5. convex regions;
 6. Clifford blocks.
 

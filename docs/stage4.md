@@ -8,7 +8,7 @@ Stage 4 code and the new `optimize`). Spec: `docs/stage4_spec.md`; its
 
 ## How `optimize` works now
 
-> **Update (22 November 2026):** the Stages 1–2 candidate below, and the legacy Stage 2 candidate added in Stage 5, were later removed. Neither ever won outright on the benchmark corpus. The current candidates are the input, Pipeline A, Pipeline B and B after A (README §4.2).
+> **Update (22 November 2026):** the Stages 1–2 candidate below, and the legacy Stage 2 candidate added in Stage 5, were later removed. Neither ever won outright on the benchmark corpus. The current candidates are the input, Pipeline A, Pipeline B, B after A, and Pipeline A with list regions on the given listing (README §4.2).
 
 1. Build five candidates:
    - the input;
