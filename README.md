@@ -118,6 +118,8 @@ if the final check ever failed, `optimize` would return the input unchanged
 
 ## 4. The algorithm, from input to output
 
+This section is the overview. **`ALGORITHMS.md`** is the precise reference: pseudocode for every algorithm, every parameter and heuristic, and the reason and measurement behind each choice.
+
 ### 4.1 Top level: `optimize`
 1. **Validate** the circuit and config (starter code), then validate
    `beam_width`.
@@ -593,6 +595,7 @@ the tests. Two tests were added after mutants initially survived.
 | File | Purpose |
 |---|---|
 | `submission.py` | **The submission**: the full optimizer plus the organizers' starter helpers |
+| `ALGORITHMS.md` | Precise reference: pseudocode, parameters, heuristics and the reason for each choice |
 | `stage2_baseline.py` | Frozen Stage 1–2 optimizer, the reference for tests and benchmarks. Not submitted. |
 | `report.py` -> `REPORT.md` | The results report: example circuits for every level shown before and after, with equivalence checks, resources, weight comparisons, corpus results and runtime scaling. Regenerate with `python report.py`. |
 | `compare_qiskit.py` | Optional comparison with Qiskit's transpiler (needs `pip install qiskit`) |
