@@ -57,7 +57,7 @@ See README.md for the algorithm and the identities named below.
 - **Output:** `CX02`
 - **Equivalent up to global phase (organizers' checker):** yes
 - **1q / 2q / depth:** 0 / 3 / 3 -> 0 / 1 / 1
-- **Cost:** 18.6 -> 6.2  (1.92 s)
+- **Cost:** 18.6 -> 6.2  (1.71 s)
 - **Why:** CX01 and CX02 commute (identity 11); the CX01 pair cancels.
 
 ### A phase through a CX control
@@ -119,17 +119,17 @@ See README.md for the algorithm and the identities named below.
 - **Output:** `CX01 S1 H0 T0 H0`
 - **Equivalent up to global phase (organizers' checker):** yes
 - **1q / 2q / depth:** 5 / 3 / 5 -> 4 / 1 / 4
-- **Cost:** 24 -> 10.8  (0.07 s)
+- **Cost:** 24 -> 10.8  (0.06 s)
 - **Why:** Wire 1 holds x0 XOR x1 throughout; the two T gates on it merge into S even though H gates sit between them (identity 20).
 
 ### A random 5-qubit, 60-gate circuit
 
 - **Weights** (w1, w2, wd): (1, 6, 0.2)
 - **Input:** `Z4 Z3 SDG1 Z4 S0 Z2 S0 CX43 Z4 S4 CX40 CX01 SDG4 CX32 Z4 SDG4 SDG2 Z0 H3 T3 H2 TDG1 T0 H4 H3 H2 X0 CX01 SDG0 Z3 X3 H4 SDG2 TDG0 T2 CX30 S1 H0 CX34 S4 ... (+20 more)`
-- **Output:** `Z0 CX43 S4 CX40 CX01 CX32 Z2 T2 TDG1 CX01 H3 T3 H3 CX34 CX30 SDG3 SDG4 X3 CX24 CX14 CX42 TDG2 Z4 H3 H0 H1 SDG0 Z1 TDG3`
+- **Output:** `CX43 CX40 SDG4 CX01 X0 CX32 T2 H3 T3 S1 T1 H3 CX01 X3 CX34 CX30 S3 H3 TDG3 SDG4 CX14 CX24 CX42 H1 H0 SDG0 TDG2`
 - **Equivalent up to global phase (organizers' checker):** yes
-- **1q / 2q / depth:** 50 / 10 / 21 -> 19 / 10 / 11
-- **Cost:** 114.2 -> 81.2  (1.55 s)
+- **1q / 2q / depth:** 50 / 10 / 21 -> 17 / 10 / 12
+- **Cost:** 114.2 -> 79.4  (1.53 s)
 - **Why:** Many interacting rewrites (cancellation, regions, blocks, beam search).
 
 ## Level 4: adapting to the weights
@@ -188,7 +188,7 @@ One random 4-qubit circuit under all four benchmark profiles:
 - **Why:** Unchanged: SWAP needs 3 CX gates (the exact two-qubit table confirms no cheaper form).
 
 Other known limits (measured, see README section 9):
-- On 2-qubit circuits with a known optimum of at most 4 gates, 2 of 524 are 1 gate above optimal.
+- On 2-qubit circuits with a known optimum of at most 4 gates, 2 of 1,039 are 1 gate above optimal.
 - Regions of 4-6 wires use heuristic CX synthesis, so wide CX networks may not be minimal.
 - Large random circuits keep most of their structure: the beam search finds local improvements, not global optima.
 
@@ -196,9 +196,9 @@ Other known limits (measured, see README section 9):
 
 | Weights | Mean cost: input | Stage 1-2 baseline | submission.py | vs input | vs baseline | all equivalent |
 |---|---|---|---|---|---|---|
-| w2-heavy (1,6,0.2) | 87.90 | 60.46 | 39.82 | 0.453 | 0.659 | yes |
-| balanced (1,1,1) | 54.06 | 34.03 | 23.23 | 0.430 | 0.683 | yes |
-| w1-heavy (1,0,0) | 23.66 | 13.83 | 9.40 | 0.397 | 0.680 | yes |
+| w2-heavy (1,6,0.2) | 87.90 | 60.46 | 39.75 | 0.452 | 0.658 | yes |
+| balanced (1,1,1) | 54.06 | 34.03 | 22.97 | 0.425 | 0.675 | yes |
+| w1-heavy (1,0,0) | 23.66 | 13.83 | 9.37 | 0.396 | 0.678 | yes |
 | wd-heavy (0,0,1) | 20.37 | 12.86 | 7.74 | 0.380 | 0.602 | yes |
 
 ## Runtime versus circuit size
@@ -207,9 +207,9 @@ Mean seconds per `optimize` call on random 6-qubit circuits (weights 1, 6, 0.2):
 
 | Gates | Mean seconds | Mean cost reduction |
 |---|---|---|
-| 10 | 0.05 | 19% |
-| 20 | 0.31 | 21% |
-| 40 | 0.68 | 48% |
-| 60 | 1.38 | 43% |
+| 10 | 0.04 | 19% |
+| 20 | 0.29 | 21% |
+| 40 | 0.57 | 48% |
+| 60 | 1.41 | 43% |
 
 **Every output in this report passed the organizers' equivalence check: yes.**

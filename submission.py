@@ -85,14 +85,20 @@ def optimize(circuit, config, beam_width=None):
 
 def _select(n, reference, start, config, beam_width=None):
     """One selection round: build candidates (the round's input, Pipeline A,
-    Pipeline B, B after A), verify each against the input unitary, keep the
-    cheapest, then beam-search from it."""
+    Pipeline B, B after A, A on the given listing), verify each against the
+    input unitary, keep the cheapest, then beam-search from it."""
     s2 = _stage12(n, start)                                # Stages 1-2 cleanup
     a = _full_optimize(n, s2, config)                      # Pipeline A
     candidates = [start, a]
     if FEATURES["pipeline_b"]:
         candidates.append(_full_optimize(n, _pipeline_b(n, s2), config))  # B
         candidates.append(_full_optimize(n, _pipeline_b(n, a), config))   # B after A
+    # Pipeline A with list regions on the given listing (no H-delayed/H-eager
+    # reordering). The fewest-regions reordering helps some weights and hurts
+    # others; as an extra candidate (last, so ties keep the others) it made
+    # the bench corpus no worse under any profile: -0.2% w2-heavy, -1.1%
+    # balanced, -0.3% w1-heavy, 0 wd-heavy.
+    candidates.append(_full_optimize(n, s2, config, reorder_regions=False))
     # Each candidate is checked against the ORIGINAL input's unitary. Every
     # pipeline is built from exact identities, so a rejection means a bug:
     # strict mode (used by the tests) raises; otherwise the candidate is
@@ -1174,9 +1180,11 @@ def _region_spans(gates):
     return spans
 
 
-def _region_pass(n, gates, config):
-    """Replace every region by its cheapest verified rewrite (in context)."""
-    gates = _region_order(gates)
+def _region_pass(n, gates, config, reorder=True):
+    """Replace every region by its cheapest verified rewrite (in context).
+    With reorder=False the given listing is kept (see _select)."""
+    if reorder:
+        gates = _region_order(gates)
     for s, e in reversed(_region_spans(gates)):  # right to left keeps indices valid
         segment = gates[s:e]
         wires = _wires_of(segment)
@@ -2136,7 +2144,7 @@ def _beam_search(n, start, config, beam_width=None):
 
 # --- the shared, convergent optimization loop (used by every candidate) -------------
 
-def _full_optimize(n, gates, config):
+def _full_optimize(n, gates, config, reorder_regions=True):
     """The greedy loop used by every candidate: Stages 1-2, phase folding,
     H-reduction, regions (list and convex) and 2-qubit Clifford blocks, plus
     any passes switched on in FEATURES, repeated until the cost tuple stops
@@ -2149,7 +2157,7 @@ def _full_optimize(n, gates, config):
         if FEATURES["h_reduce"]:
             g = _stage12(n, _h_reduce(g, config))
         if FEATURES["regions"]:
-            g = _stage12(n, _region_pass(n, g, config))
+            g = _stage12(n, _region_pass(n, g, config, reorder_regions))
         if FEATURES["convex_regions"]:
             g = _stage12(n, _convex_region_pass(n, g, config))
         if FEATURES["cross_regions_greedy"]:

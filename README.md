@@ -131,7 +131,7 @@ if the final check ever failed, `optimize` would return the input unchanged
    dict.
 
 ### 4.2 One selection round: `_select`
-1. **Build four candidates.** The three pipelines all use the same greedy loop
+1. **Build five candidates.** The four pipelines all use the same greedy loop
    (`_full_optimize`, §4.13):
 
    | Candidate | What it is |
@@ -140,6 +140,7 @@ if the final check ever failed, `optimize` would return the input unchanged
    | Pipeline A | Stages 1–2 cleanup, then the greedy loop |
    | Pipeline B | the Pauli-rotation rewrite (§4.9) of the cleaned input, then the greedy loop |
    | B after A | Pipeline B applied to A's result, then the greedy loop |
+   | A, given listing | Pipeline A with the list region pass on the circuit as listed (no H-delayed/H-eager reordering) |
 
 2. **Verify** every candidate against the input unitary.
 3. **Keep the cheapest** under the weights, by
@@ -412,7 +413,7 @@ profiles) unless noted otherwise.
 | **Exact identities only** | The challenge gives no credit for inequivalent output. Exactness also makes every step explainable. |
 | **Deterministic work budgets, not time limits** | Same input, same output on any machine; a time limit would make results depend on machine speed. |
 | **Three verification layers** (§3) | Defence in depth against bugs. 1,455 checks, 0 rejections. Strict mode makes the tests fail loudly. |
-| **Candidates: the input, A, B, B after A** | Each pipeline is the only cheapest result in some cases (A 46, B 6, B after A 11 of 140, first round). Two earlier candidates were removed: the improved Stage 1–2 result can never beat A, which starts from it, and the legacy Stage 2 path was never cheaper than it. Removing both changed 7 of 140 outputs, all at equal cost. "Never worse than Stage 2" is now checked by tests against `stage2_baseline.py` rather than holding by construction. |
+| **Candidates: the input, A, B, B after A, A on the given listing** | Each of A, B and B after A is the only cheapest result in some cases (A 46, B 6, B after A 11 of 140, first round). The fifth candidate exists because the fewest-regions reordering helps some weights and hurts others (replacing it outright: −2.0% w2-heavy but +2.4% w1-heavy); as an extra candidate it changed no profile for the worse (−0.2% w2-heavy, −1.1% balanced, −0.3% w1-heavy, 0 wd-heavy). Choosing the listing by cost after the region pass alone, and alternative pass orders, were tested and were worse. Two earlier candidates were removed: the improved Stage 1–2 result can never beat A, which starts from it, and the legacy Stage 2 path was never cheaper than it. Removing both changed 7 of 140 outputs, all at equal cost. "Never worse than Stage 2" is now checked by tests against `stage2_baseline.py` rather than holding by construction. |
 | **Segment summing places the merged phase at the lowest-depth position** | Placing it first raised depth from 6 to 8 in a found case. |
 | **Beam search on top of greedy passes** | A 7–10% lower cost than greedy alone. Width 16 vs 6: 2.6% lower cost at about 0.7 s median per call (measured before the caching row below). Width 48 gained only 0.4% more. Runtime is about 2× because exact idempotence needs a confirmation round. |
 | **Cross-region moves and T-blocks: beam-only** | Applied greedily they *hurt* (cross-regions 0.725 → 0.718 of Stage 2 when removed; T-blocks hurt w1-heavy), because an immediately accepted move blocks better later ones. |
@@ -437,18 +438,18 @@ baseline:
 
 | Weights (w1, w2, wd) | vs input | vs Stage 2 baseline |
 |---|---|---|
-| CX-heavy (1, 6, 0.2) | 0.453 | 0.659 |
-| balanced (1, 1, 1) | 0.430 | 0.683 |
-| one-qubit only (1, 0, 0) | 0.397 | 0.680 |
+| CX-heavy (1, 6, 0.2) | 0.452 | 0.658 |
+| balanced (1, 1, 1) | 0.425 | 0.675 |
+| one-qubit only (1, 0, 0) | 0.396 | 0.678 |
 | depth only (0, 0, 1) | 0.380 | 0.602 |
 
 **Optimality on small circuits** (exhaustive search for the true minimum):
 
 | Circuits | Optimal |
 |---|---|
-| 2-qubit, optimum ≤ 4 gates | 99.6% (522/524) |
-| 3-qubit, optimum ≤ 4 gates | 123/124 |
-| 3-qubit, optimum 5 gates | 200/200 |
+| 2-qubit, optimum ≤ 4 gates | 99.8% (1037/1039) |
+| 3-qubit, optimum ≤ 4 gates | 123/124 (measured before the fifth candidate was added) |
+| 3-qubit, optimum 5 gates | 200/200 (measured before the fifth candidate was added) |
 
 **Known cases** (all pinned by tests):
 - the guidelines' example: `CX01 Z0 CX01 → Z0`, cost 13.6 → 1.2;
@@ -466,9 +467,9 @@ checked with the organizers' equivalence function, and all were equivalent:
 
 | Weights | Input | Qiskit (best per circuit) | Ours | Ours / Qiskit |
 |---|---|---|---|---|
-| CX-heavy (1, 6, 0.2) | 87.90 | 58.29 | 39.82 | 0.683 |
-| balanced (1, 1, 1) | 54.06 | 34.03 | 23.23 | 0.683 |
-| one-qubit only (1, 0, 0) | 23.66 | 14.34 | 9.40 | 0.655 |
+| CX-heavy (1, 6, 0.2) | 87.90 | 58.29 | 39.75 | 0.682 |
+| balanced (1, 1, 1) | 54.06 | 34.03 | 22.97 | 0.675 |
+| one-qubit only (1, 0, 0) | 23.66 | 14.34 | 9.37 | 0.653 |
 | depth only (0, 0, 1) | 20.37 | 12.71 | 7.74 | 0.609 |
 
 - **Result:** ours is cheaper on 30–33 of the 35 circuits per profile and

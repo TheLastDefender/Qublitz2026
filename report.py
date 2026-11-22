@@ -151,7 +151,7 @@ def main():
                    "Unchanged: SWAP needs 3 CX gates (the exact two-qubit table confirms no cheaper form).",
                    lines)
     lines += ["Other known limits (measured, see README section 9):",
-              "- On 2-qubit circuits with a known optimum of at most 4 gates, 2 of 524 are 1 gate above optimal.",
+              "- On 2-qubit circuits with a known optimum of at most 4 gates, 2 of 1,039 are 1 gate above optimal.",
               "- Regions of 4-6 wires use heuristic CX synthesis, so wide CX networks may not be minimal.",
               "- Large random circuits keep most of their structure: the beam search finds local improvements,"
               " not global optima.", ""]
