@@ -1589,7 +1589,9 @@ def _dominates(a, b):
 
 @functools.lru_cache(maxsize=None)
 def _cliff2_table():
-    """key -> list of (label, gates); label = (n2, n1, depth0, depth1). Pareto."""
+    """key -> list of (label, gates); label = (n2, n1, depth0, depth1). Pareto.
+    About 1.8 s to build, once per process (lru_cache), on first use: by
+    _block_pass or the T-block pass, so never for one-qubit circuits."""
     start = _cliff2_key([])
     table = {start: [((0, 0, 0, 0), ())]}
     layer = [(start, (0, 0, 0, 0), ())]
@@ -1656,7 +1658,8 @@ def _pair_blocks(gates, a, b, clifford_only=False):
 
 def _block_pass(n, gates, config):
     """Replace 2-qubit Clifford blocks by their cheapest exact implementation.
-    The Clifford table is built on first use, i.e. only once a block exists."""
+    The table is fetched only when a block exists, but _t_block_pass also
+    needs it, so in practice it is built on the first multi-qubit circuit."""
     gates = list(gates)
     changed = True
     while changed:

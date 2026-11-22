@@ -31,6 +31,9 @@ of the input.
   depending on the weight profile.
 - **One-time setup:** building the Clifford table takes about 1.7 s, on the
   first call in a process.
+- **Later update (caching, after Stage 6):** caching region and T-block
+  rebuilds left all outputs identical and brought the median to 0.27–0.54 s
+  and the maximum to about 4–5 s; see README §8.
 - **Budget:** the beam's evaluation budget was never reached. Every search
   stopped because it ran out of improvements.
 

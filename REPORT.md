@@ -15,7 +15,7 @@ See README.md for the algorithm and the identities named below.
 - **Output:** `(empty: identity)`
 - **Equivalent up to global phase (organizers' checker):** yes
 - **1q / 2q / depth:** 6 / 0 / 6 -> 0 / 0 / 0
-- **Cost:** 7.2 -> 0  (1.71 s)
+- **Cost:** 7.2 -> 0  (0.00 s)
 - **Why:** H H = X X = T TDG = I (identity 1), removed by the per-wire stacks (Stage 1).
 
 ### A phase run that only collapses when summed
@@ -57,7 +57,7 @@ See README.md for the algorithm and the identities named below.
 - **Output:** `CX02`
 - **Equivalent up to global phase (organizers' checker):** yes
 - **1q / 2q / depth:** 0 / 3 / 3 -> 0 / 1 / 1
-- **Cost:** 18.6 -> 6.2  (0.00 s)
+- **Cost:** 18.6 -> 6.2  (1.83 s)
 - **Why:** CX01 and CX02 commute (identity 11); the CX01 pair cancels.
 
 ### A phase through a CX control
@@ -119,7 +119,7 @@ See README.md for the algorithm and the identities named below.
 - **Output:** `CX01 S1 H0 T0 H0`
 - **Equivalent up to global phase (organizers' checker):** yes
 - **1q / 2q / depth:** 5 / 3 / 5 -> 4 / 1 / 4
-- **Cost:** 24 -> 10.8  (0.10 s)
+- **Cost:** 24 -> 10.8  (0.06 s)
 - **Why:** Wire 1 holds x0 XOR x1 throughout; the two T gates on it merge into S even though H gates sit between them (identity 20).
 
 ### A random 5-qubit, 60-gate circuit
@@ -129,7 +129,7 @@ See README.md for the algorithm and the identities named below.
 - **Output:** `Z0 CX43 S4 CX40 CX01 CX32 Z2 T2 TDG1 CX01 H3 T3 H3 CX34 CX30 SDG3 SDG4 X3 CX24 CX14 CX42 TDG2 Z4 H3 H0 H1 SDG0 Z1 TDG3`
 - **Equivalent up to global phase (organizers' checker):** yes
 - **1q / 2q / depth:** 50 / 10 / 21 -> 19 / 10 / 11
-- **Cost:** 114.2 -> 81.2  (2.85 s)
+- **Cost:** 114.2 -> 81.2  (1.65 s)
 - **Why:** Many interacting rewrites (cancellation, regions, blocks, beam search).
 
 ## Level 4: adapting to the weights
@@ -174,7 +174,7 @@ One random 4-qubit circuit under all four benchmark profiles:
 - **Output:** `H2 CX10 T1 T2 TDG0 CX20 T0 CX10 TDG0 CX21 TDG1 CX20 CX21 H2 T0`
 - **Equivalent up to global phase (organizers' checker):** yes
 - **1q / 2q / depth:** 9 / 6 / 11 -> 9 / 6 / 9
-- **Cost:** 47.2 -> 46.8  (1.01 s)
+- **Cost:** 47.2 -> 46.8  (0.65 s)
 - **Why:** Same 15 gates (6 CX, 2 H, 4 T, 3 TDG; the 7 T and 6 CX are the known minima: Gosset et al. 2013, Shende & Markov 2008), but depth 11 -> 9. Pipeline B rebuilds the CCZ core as phases on parities with a different 6-CX network; beam-search moves then slide phase gates into idle slots (e.g. T0 runs alongside the final H2). T-depth stays 4; Amy et al. 2013 reach T-depth 3, which our cost does not target.
 
 ### SWAP
@@ -184,7 +184,7 @@ One random 4-qubit circuit under all four benchmark profiles:
 - **Output:** `CX01 CX10 CX01`
 - **Equivalent up to global phase (organizers' checker):** yes
 - **1q / 2q / depth:** 0 / 3 / 3 -> 0 / 3 / 3
-- **Cost:** 18.6 -> 18.6  (0.01 s)
+- **Cost:** 18.6 -> 18.6  (0.00 s)
 - **Why:** Unchanged: SWAP needs 3 CX gates (the exact two-qubit table confirms no cheaper form).
 
 Other known limits (measured, see README section 9):
@@ -207,9 +207,9 @@ Mean seconds per `optimize` call on random 6-qubit circuits (weights 1, 6, 0.2):
 
 | Gates | Mean seconds | Mean cost reduction |
 |---|---|---|
-| 10 | 0.10 | 19% |
-| 20 | 1.11 | 21% |
-| 40 | 1.26 | 48% |
-| 60 | 2.55 | 43% |
+| 10 | 0.04 | 19% |
+| 20 | 0.39 | 21% |
+| 40 | 0.69 | 48% |
+| 60 | 1.49 | 43% |
 
 **Every output in this report passed the organizers' equivalence check: yes.**

@@ -81,7 +81,7 @@ guidelines (*SubmissionGuidelineCircuits.pdf*).
 | Level 2: hidden redundancies (commutation, CX Z₀ CX = Z₀) | Stage 2, §4.4 |
 | Level 3: a general compiler (repeated rewriting, larger patterns, combined methods, heuristics) | Regions, phase folding, exact 2-qubit blocks, Pauli rotations, beam search: §4.5–§4.10 |
 | Level 4: changing resource weights | Cost-aware selection everywhere, Pareto tables, depth moves that follow `wd`: §4.11 |
-| Reliability and runtime are considered | Deterministic, never worse than the input; about 1 s median per circuit (§8) |
+| Reliability and runtime are considered | Deterministic, never worse than the input; about 0.3–0.5 s median per circuit (§8) |
 | Attribution of external code, algorithms, libraries and AI | §6 and §12 |
 
 ---
@@ -238,7 +238,8 @@ never worse.
 
 ### 4.8 Exact two-qubit Clifford blocks (`_block_pass`)
 - **The table.** All **11,520** two-qubit Clifford operations (up to phase)
-  are enumerated at start-up (about 1.7 s, once per process). Each is keyed
+  are enumerated on first use (about 1.8 s, once per process; in practice on
+  the first multi-qubit circuit, never for one-qubit ones). Each is keyed
   exactly by its tableau, and every Pareto-optimal implementation in
   (CX count, one-qubit count, per-wire depth) is stored.
 - **The pass.** Any maximal block of Clifford gates on a qubit pair is
@@ -414,14 +415,14 @@ profiles) unless noted otherwise.
 | **Three verification layers** (§3) | Defence in depth against bugs. 1,455 checks, 0 rejections. Strict mode makes the tests fail loudly. |
 | **Keep the legacy Stage 2 as a candidate** | "Never worse than Stage 2" then holds by construction. A test pins it to `stage2_baseline.py`. |
 | **Segment summing places the merged phase at the lowest-depth position** | Placing it first raised depth from 6 to 8 in a found case. |
-| **Beam search on top of greedy passes** | A 7–10% lower cost than greedy alone. Width 16 vs 6: 2.6% lower cost at about 0.7 s median per call. Width 48 gained only 0.4% more. Runtime is about 2× because exact idempotence needs a confirmation round. |
+| **Beam search on top of greedy passes** | A 7–10% lower cost than greedy alone. Width 16 vs 6: 2.6% lower cost at about 0.7 s median per call (measured before the caching row below). Width 48 gained only 0.4% more. Runtime is about 2× because exact idempotence needs a confirmation round. |
 | **Cross-region moves and T-blocks: beam-only** | Applied greedily they *hurt* (cross-regions 0.725 → 0.718 of Stage 2 when removed; T-blocks hurt w1-heavy), because an immediately accepted move blocks better later ones. |
 | **Depth placement only when `wd > w1 + w2`** | +2.2% on depth-heavy weights, but −0.9% on balanced weights when always on. This rule was chosen from the benchmark corpus. |
-| **Tables built at start-up** | About 1.7 s once per process, but nothing is shipped as data and everything is reproducible from code. |
+| **Tables built in code on first use** | About 1.8 s once per process (the two-qubit Clifford table), but nothing is shipped as data and everything is reproducible from code. Only matters if each circuit runs in a fresh process. |
 | **Exact keys for one-qubit tables** (Matsumoto–Amano) | Removes floating-point rounding from decisions. Only the legacy table keeps float keys, to reproduce `stage2_baseline.py`. |
 | **Tried and removed:** closure-based move skipping, lookahead scoring, Pipeline B ladder-target choice, a depth-optimal CX-network candidate | Measured respectively: same cost ~45% slower; worse cost; no end-to-end change; +0.6% w1-heavy but −0.9% w2-heavy even at equal CX count. |
 | **Kept although they look redundant:** list regions, H-reduction, "B after A", the BFS-greedy rebuild for ≤ 3 wires, Stage 1 inside the improved path | Removing each one made at least one weight profile worse. Equal-cost choices change which later improvements are reachable. |
-| **Caching** (`_best_run`, `_commutes`) | 33% faster, with all 140 benchmark outputs byte-identical. |
+| **Caching** (`_best_run`, `_commutes`; later `_region_candidates`, `_resynth_t_block`) | 33% faster, then a further ~1.6× (beam states share most regions and blocks), each time with all 140 benchmark outputs byte-identical. |
 
 ---
 
@@ -482,9 +483,10 @@ checked with the organizers' equivalence function, and all were equivalent:
 - **Caveat:** this compares against Qiskit's general-purpose transpiler, not
   against a Clifford+T-specialized optimizer.
 
-**Runtime:** median about 0.8–1.3 s per circuit (up to 60 gates, 6 qubits),
-and up to about 10–15 s on the largest benchmark circuits. Add about 1.7 s for
-the tables on the first call in a process. Cost grows roughly linearly with
+**Runtime:** median about 0.3–0.5 s per circuit (up to 60 gates, 6 qubits;
+0.27–0.54 s depending on the weight profile), and up to about 4–5 s on the
+largest benchmark circuits. Add about 1.8 s for the Clifford table on the
+first multi-qubit call in a process. Cost grows roughly linearly with
 beam width, and with gates × moves per beam step.
 
 The development history, with per-step measurements, is in `docs/`
