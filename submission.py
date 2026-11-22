@@ -24,9 +24,11 @@ This includes a LOCAL checker, not the organizers' private tests.
 
 import copy
 import functools
+import heapq
 import itertools
 import math
 import os
+from collections import deque
 
 import numpy as np
 
@@ -532,7 +534,7 @@ def _best_run(names):
     return list(_best_run_cached(tuple(names)))
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=65536)
 def _best_run_cached(names):
     """Shortest replacement for a run of one-qubit gates on one wire.
 
@@ -561,6 +563,20 @@ def _best_run_cached(names):
     return tuple(min(options, key=len))
 
 
+def _splice(gates, drop, at, new):
+    """Copy of `gates` without the indices in `drop`, with `new` inserted where
+    index `at` was (`at` is one of the dropped indices). Every block rewrite
+    uses this: the dropped gates are consecutive on their wires, so moving
+    the replacement to one of their positions keeps each wire's order."""
+    out = []
+    for i, g in enumerate(gates):
+        if i == at:
+            out.extend(new)
+        elif i not in drop:
+            out.append(g)
+    return out
+
+
 def _window_pass(gates):
     """Replace the first one-qubit run that has a shorter equivalent."""
     n_gates = len(gates)
@@ -580,14 +596,7 @@ def _window_pass(gates):
         for run in runs:
             best = _best_run([gates[k][0] for k in run])
             if len(best) < len(run):
-                drop = set(run)
-                out = []
-                for k in range(n_gates):
-                    if k == run[0]:
-                        out.extend((name, (q,)) for name in best)
-                    elif k not in drop:
-                        out.append(gates[k])
-                return out, True
+                return _splice(gates, set(run), run[0], [(name, (q,)) for name in best]), True
     return list(gates), False
 
 
@@ -618,16 +627,8 @@ def _phase_segment_pass(gates):
                     # The merged phase may sit at any of the segment's phase
                     # positions (all equivalent). Gate count is the same at
                     # each, so pick the lowest depth (ties: earliest).
-                    drop = set(segment)
-                    options = []
-                    for at in segment:
-                        out = []
-                        for i in range(n_gates):
-                            if i == at:
-                                out.extend((name, (q,)) for name in _PHASE_OUT[total])
-                            elif i not in drop:
-                                out.append(gates[i])
-                        options.append(out)
+                    merged = [(name, (q,)) for name in _PHASE_OUT[total]]
+                    options = [_splice(gates, set(segment), at, merged) for at in segment]
                     return min(options, key=lambda o: _metrics_pairs(o)[2]), True
             segment = []
     return list(gates), False
@@ -1015,7 +1016,6 @@ def _linear_ops_gauss(rows):
 @functools.lru_cache(maxsize=None)
 def _linear_bfs(m):
     """Shortest CX sequence for every invertible m x m GF(2) map (m <= 4)."""
-    from collections import deque
     start = tuple(1 << i for i in range(m))
     parent = {start: None}
     queue = deque([start])
@@ -1051,27 +1051,41 @@ def _reconstruct_gauss(rows, b, terms, wires):
     return gates
 
 
-def _reconstruct_bfs(rows, b, terms, wires):
-    """CX-optimal linear part; phases placed where a wire already holds them."""
+def _walk_cx_path(path, terms, wires):
+    """Walk a CX path (local (c, t) pairs) from the identity, applying each
+    phase term the first time its parity sits on a wire (lowest wire first).
+    Returns (gates, terms whose parity never appeared)."""
     m = len(wires)
     pending = dict(terms)
     cur = [1 << i for i in range(m)]
-    body = []
+    out = []
 
     def place():
         for i in range(m):
             if cur[i] in pending:
-                body.extend((name, (wires[i],)) for name in _PHASE_OUT[pending.pop(cur[i])])
+                out.extend((name, (wires[i],)) for name in _PHASE_OUT[pending.pop(cur[i])])
 
     place()
-    for c, t in _linear_bfs(m)[tuple(rows)]:
-        body.append(("CX", (wires[c], wires[t])))
+    for c, t in path:
+        out.append(("CX", (wires[c], wires[t])))
         cur[t] ^= cur[c]
         place()
+    return out, pending
+
+
+def _flips(b, wires):
+    """X gates for the flip bits b."""
+    return [("X", (wires[i],)) for i in range(len(wires)) if (b >> i) & 1]
+
+
+def _reconstruct_bfs(rows, b, terms, wires):
+    """CX-optimal linear part; phases placed where a wire already holds them,
+    any parity that never appears as a gadget at the start."""
+    body, pending = _walk_cx_path(_linear_bfs(len(wires))[tuple(rows)], terms, wires)
     pre = []
-    for y, c in sorted(pending.items()):  # parities never seen: gadget at start
+    for y, c in sorted(pending.items()):
         pre += _gadget(y, c, wires)
-    return pre + body + [("X", (wires[i],)) for i in range(m) if (b >> i) & 1]
+    return pre + body + _flips(b, wires)
 
 
 # --- 4c: phase merging (automatic in `terms`) and resynthesis --------------------
@@ -1137,6 +1151,12 @@ def _wires_of(gates):
 
 
 def _region_candidates(n, gates, wires):
+    """All exact rewrites of one region (cached: beam states share regions)."""
+    return [list(c) for c in _region_candidates_cached(n, tuple(gates), tuple(wires))]
+
+
+@functools.lru_cache(maxsize=16384)
+def _region_candidates_cached(n, gates, wires):
     """All exact rewrites of one region, verified with the canonical form."""
     rows, b, terms = _region_build(gates, wires)
     canon = (tuple(rows), b, _phase_table(len(wires), terms))
@@ -1168,7 +1188,7 @@ def _region_candidates(n, gates, wires):
             out.append(cand)
         elif _strict():
             raise AssertionError("region rewrite changed the region's unitary")
-    return out
+    return tuple(tuple(c) for c in out)
 
 
 def _best_region(n, gates, config):
@@ -1177,6 +1197,19 @@ def _best_region(n, gates, config):
         return []
     wires = _wires_of(gates)
     return min(_region_candidates(n, gates, wires), key=lambda c: _key(c, config))
+
+
+def _wire_successors(gates):
+    """For each gate, the indices of the next gate on each of its wires
+    (without duplicates): the dependency graph used for reordering."""
+    succs = [[] for _ in gates]
+    last = {}
+    for i, (_, qubits) in enumerate(gates):
+        for q in qubits:
+            if q in last and i not in succs[last[q]]:
+                succs[last[q]].append(i)
+            last[q] = i
+    return succs
 
 
 def _h_delay_order(gates, eager=False):
@@ -1188,16 +1221,11 @@ def _h_delay_order(gates, eager=False):
     Neither variant is always best: postponing an H that is needed later can
     move a boundary from the start into the middle. `_region_order` picks.
     """
-    import heapq
+    succs = _wire_successors(gates)
     preds = [0] * len(gates)
-    succs = [[] for _ in gates]
-    last = {}
-    for i, (_, qubits) in enumerate(gates):
-        for q in qubits:
-            if q in last and i not in succs[last[q]]:
-                succs[last[q]].append(i)
-                preds[i] += 1
-            last[q] = i
+    for nexts in succs:
+        for i in nexts:
+            preds[i] += 1
     ready_other, ready_h = [], []
     for i in range(len(gates)):
         if preds[i] == 0:
@@ -1627,8 +1655,8 @@ def _pair_blocks(gates, a, b, clifford_only=False):
 
 
 def _block_pass(n, gates, config):
-    """Replace 2-qubit Clifford blocks by their cheapest exact implementation."""
-    table = _cliff2_table()
+    """Replace 2-qubit Clifford blocks by their cheapest exact implementation.
+    The Clifford table is built on first use, i.e. only once a block exists."""
     gates = list(gates)
     changed = True
     while changed:
@@ -1639,19 +1667,13 @@ def _block_pass(n, gates, config):
                 for block in _pair_blocks(gates, a, b, clifford_only=True):
                     local = {a: 0, b: 1}
                     seq = [(gates[i][0], tuple(local[q] for q in gates[i][1])) for i in block]
-                    options = table[_cliff2_key(seq)]
+                    options = _cliff2_table()[_cliff2_key(seq)]
                     label, best = min(options, key=lambda e: (_label_cost(e[0], config), e[0]))
                     if _label_cost(label, config) >= _label_cost(_local_label(seq), config):
                         continue
                     back = {0: a, 1: b}
                     new = [(g, tuple(back[q] for q in qs)) for g, qs in best]
-                    drop = set(block)
-                    out = []
-                    for i, g in enumerate(gates):
-                        if i == block[-1]:
-                            out.extend(new)
-                        elif i not in drop:
-                            out.append(g)
+                    out = _splice(gates, set(block), block[-1], new)
                     if _key(out, config) < base:
                         gates = out
                         changed = True
@@ -1681,18 +1703,11 @@ def _gf2_mul(a, b):
 
 
 def _gf2_inv(rows):
-    """Inverse of an invertible row-bitmask matrix over GF(2)."""
-    m = len(rows)
-    a = list(rows)
-    inv = [1 << i for i in range(m)]
-    for j in range(m):
-        r = next(r for r in range(j, m) if (a[r] >> j) & 1)
-        a[j], a[r] = a[r], a[j]
-        inv[j], inv[r] = inv[r], inv[j]
-        for i in range(m):
-            if i != j and (a[i] >> j) & 1:
-                a[i] ^= a[j]
-                inv[i] ^= inv[j]
+    """Inverse over GF(2). _linear_ops_gauss returns the elimination steps in
+    build order; applied in elimination order to the identity they give A^-1."""
+    inv = [1 << k for k in range(len(rows))]
+    for c, t in reversed(_linear_ops_gauss(rows)):
+        inv[t] ^= inv[c]
     return inv
 
 
@@ -1704,7 +1719,6 @@ def _exact_small_paths(m, needed):
     Breadth-first search over (wire contents, parities not yet seen): at most
     168 x 2^7 = 21,504 states for 3 wires. Returns {final rows: move list}.
     """
-    from collections import deque
     moves = [(c, t) for c in range(m) for t in range(m) if c != t]
 
     def absorb(rows, rem):
@@ -1739,26 +1753,9 @@ def _exact_small_paths(m, needed):
 
 
 def _emit_along(path, terms, b, wires):
-    """Walk a CX path from the identity; apply each phase the first time its
-    parity sits on a wire (lowest wire first); X gates for b at the end."""
-    m = len(wires)
-    pending = dict(terms)
-    cur = [1 << i for i in range(m)]
-    out = []
-
-    def place():
-        for i in range(m):
-            if cur[i] in pending:
-                out.extend((nm, (wires[i],)) for nm in _PHASE_OUT[pending.pop(cur[i])])
-
-    place()
-    for c, t in path:
-        out.append(("CX", (wires[c], wires[t])))
-        cur[t] ^= cur[c]
-        place()
-    if pending:
-        return None
-    return out + [("X", (wires[i],)) for i in range(m) if (b >> i) & 1]
+    """The path's circuit if every phase is reached along it, else None."""
+    out, pending = _walk_cx_path(path, terms, wires)
+    return None if pending else out + _flips(b, wires)
 
 
 def _reconstruct_exact_small(rows, b, terms, wires):
@@ -1838,13 +1835,7 @@ def _reconstruct_graysynth(rows, b, terms, wires):
 def _reach_masks(gates):
     """Descendant and ancestor bitmasks for every gate (wire dependencies)."""
     count = len(gates)
-    nxt = [[] for _ in range(count)]
-    last = {}
-    for i, (_, qubits) in enumerate(gates):
-        for q in qubits:
-            if q in last and i not in nxt[last[q]]:
-                nxt[last[q]].append(i)
-            last[q] = i
+    nxt = _wire_successors(gates)
     desc = [0] * count
     for i in range(count - 1, -1, -1):
         for s in nxt[i]:
@@ -1864,7 +1855,6 @@ def _convex_regions(gates):
     Regions grow from the earliest unassigned non-H gate, adding wire
     neighbours (before or after) in index order while convexity holds.
     """
-    import heapq
     desc, anc = _reach_masks(gates)
     assigned = [False] * len(gates)
     neighbours = [set() for _ in gates]
@@ -2086,7 +2076,15 @@ def _best_clifford(seq, config):
 
 
 def _resynth_t_block(local, config):
-    """Exact cheaper rewrite of a 2-qubit gate list (local qubits 0, 1), or None."""
+    """Exact cheaper rewrite of a 2-qubit gate list (local qubits 0, 1), or None.
+    Cached on (gates, weights): beam states share most blocks."""
+    out = _resynth_t_block_cached(tuple(local), config["w1"], config["w2"], config["wd"])
+    return None if out is None else list(out)
+
+
+@functools.lru_cache(maxsize=16384)
+def _resynth_t_block_cached(local, w1, w2, wd):
+    config = {"w1": w1, "w2": w2, "wd": wd}
     rotations, clifford = _to_rotations(local)
     rotations = _merge_rotations(rotations)
     changers = _z_basis_changers()
@@ -2118,7 +2116,7 @@ def _resynth_t_block(local, config):
             best = out
     if best is None or _label_cost(_local_label(best), config) >= _label_cost(_local_label(local), config):
         return None
-    return best
+    return tuple(best)
 
 
 def _t_block_pass(n, gates, config):
@@ -2143,13 +2141,7 @@ def _t_block_pass(n, gates, config):
                         continue
                     back = {0: a, 1: b}
                     new = [(g, tuple(back[q] for q in qs)) for g, qs in new_local]
-                    drop = set(block)
-                    out = []
-                    for i, g in enumerate(gates):
-                        if i == block[-1]:
-                            out.extend(new)
-                        elif i not in drop:
-                            out.append(g)
+                    out = _splice(gates, set(block), block[-1], new)
                     if _key(out, config) < base:
                         accepted = out
                         break
