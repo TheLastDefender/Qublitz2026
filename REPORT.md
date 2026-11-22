@@ -167,16 +167,6 @@ One random 4-qubit circuit under all four benchmark profiles:
 
 ## Where it struggles or cannot improve
 
-### A single Toffoli
-
-- **Weights** (w1, w2, wd): (1, 6, 0.2)
-- **Input:** `H2 CX12 TDG2 CX02 T2 CX12 TDG2 CX02 T1 T2 H2 CX01 T0 TDG1 CX01`
-- **Output:** `H2 CX10 T1 T2 TDG0 CX20 T0 CX10 TDG0 CX21 TDG1 CX20 CX21 H2 T0`
-- **Equivalent up to global phase (organizers' checker):** yes
-- **1q / 2q / depth:** 9 / 6 / 11 -> 9 / 6 / 9
-- **Cost:** 47.2 -> 46.8  (0.69 s)
-- **Why:** Same 15 gates (6 CX, 2 H, 4 T, 3 TDG; the 7 T and 6 CX are the known minima: Gosset et al. 2013, Shende & Markov 2008), but depth 11 -> 9. Pipeline B rebuilds the CCZ core as phases on parities with a different 6-CX network; beam-search moves then slide phase gates into idle slots (e.g. T0 runs alongside the final H2). T-depth stays 4; Amy et al. 2013 reach T-depth 3, which our cost does not target.
-
 ### SWAP
 
 - **Weights** (w1, w2, wd): (1, 6, 0.2)

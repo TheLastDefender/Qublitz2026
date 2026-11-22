@@ -400,12 +400,6 @@ Full references are in §12.
 | Breadth-first search; Gauss–Jordan elimination over GF(2); Möbius transform on subsets; Pareto (multi-objective) labels; dependency-graph convexity | `_linear_bfs`, `_exact_small_paths`, `_cliff2_table`, `_window_table_long`, `_linear_ops_gauss`, `_canonical_terms`, `_convex_regions` | Standard textbook techniques, implemented here. |
 | Organizers' starter code | end of both `.py` files | `validate_circuit`, `validate_config`, `circuit_unitary`, `equivalent_up_to_global_phase`, `circuit_metrics`, `circuit_cost`, `evaluate_optimization`: unchanged. |
 
-Facts quoted in this README: the 7-T Toffoli is T-optimal without ancillae
-[Gosset et al. 2013], and needs 6 CX [Shende & Markov 2008]. That's why the
-optimizer keeps a single Toffoli at 7 T and 6 CX, improving only its depth.
-A Toffoli with T-depth 3 exists [Amy, Maslov, Mosca & Roetteler 2013]; T-depth
-is not part of this challenge's cost.
-
 ---
 
 ## 7. Trade-offs and design decisions
@@ -486,9 +480,6 @@ circuits per profile those differences are a few circuits, so all are kept.
 - Toffoli × 2: 30 gates → 0;
 - compute / H / uncompute → `H`;
 - SWAP stays at 3 CX (optimal);
-- a single Toffoli keeps exactly the same 15 gates (6 CX, 2 H, 4 T, 3 TDG), but depth drops from 11 to 9 (cost 47.2 → 46.8):
-  - **how:** Toffoli = H·CCZ·H, and CCZ is a phase polynomial over all 7 parities of 3 bits. Pipeline B rebuilds it with a different 6-CX network, and beam-search moves then slide phase gates into idle time slots. No single greedy pass finds this;
-  - **T-depth** stays 4. Amy, Maslov, Mosca & Roetteler (2013) report a Toffoli with T-depth 3 and total depth 9 (from a figure caption; their full paper was not accessible here, so their depth model and CX count are unconfirmed). Ours matches their total depth, but not their T-depth. Our cost does not count T-depth, so it is not targeted. This reproduces a known result; it is not a new one.
 
 **Standard benchmark circuits, against PyZX, Qiskit and published results**
 (`python benchmarks/compare_standard.py`; needs `pip install pyzx qiskit`).
@@ -700,6 +691,3 @@ designs and results, and directed every decision recorded in §7 and in
 - K. Matsumoto, K. Amano, "Representation of quantum circuits with Clifford and π/8 gates," arXiv:0806.3834 (2008). [doi:10.48550/arXiv.0806.3834](https://doi.org/10.48550/arXiv.0806.3834).
 - B. Giles, P. Selinger, "Remarks on Matsumoto and Amano's normal form for single-qubit Clifford+T operators," arXiv:1312.6584 (2013). [doi:10.48550/arXiv.1312.6584](https://doi.org/10.48550/arXiv.1312.6584).
 - B. T. Lowerre, "The HARPY speech recognition system," Ph.D. thesis, Carnegie Mellon University (1976). (No DOI.)
-- D. Gosset, V. Kliuchnikov, M. Mosca, V. Russo, "An algorithm for the T-count," *Quantum Inf. Comput.* **14**, 1261–1276 (2014). arXiv:1308.4134, [doi:10.48550/arXiv.1308.4134](https://doi.org/10.48550/arXiv.1308.4134).
-- V. V. Shende, I. L. Markov, "On the CNOT-cost of TOFFOLI gates," *Quantum Inf. Comput.* **9**(5–6), 461–486 (2009). arXiv:0803.2316, [doi:10.48550/arXiv.0803.2316](https://doi.org/10.48550/arXiv.0803.2316).
-- M. Amy, D. Maslov, M. Mosca, M. Roetteler, "A meet-in-the-middle algorithm for fast synthesis of depth-optimal quantum circuits," *IEEE Trans. CAD* **32**(6), 818–830 (2013). [doi:10.1109/TCAD.2013.2244643](https://doi.org/10.1109/TCAD.2013.2244643); arXiv:1206.0758.

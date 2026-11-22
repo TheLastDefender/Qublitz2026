@@ -145,8 +145,6 @@ def main():
     lines.append("")
 
     lines += ["## Where it struggles or cannot improve", ""]
-    all_ok &= case("A single Toffoli", C(3, *TOFFOLI), W2,
-                   'Same 15 gates (6 CX, 2 H, 4 T, 3 TDG; the 7 T and 6 CX are the known minima: Gosset et al. 2013, Shende & Markov 2008), but depth 11 -> 9. Pipeline B rebuilds the CCZ core as phases on parities with a different 6-CX network; beam-search moves then slide phase gates into idle slots (e.g. T0 runs alongside the final H2). T-depth stays 4; Amy et al. 2013 reach T-depth 3, which our cost does not target.', lines)
     all_ok &= case("SWAP", C(2, ("CX", 0, 1), ("CX", 1, 0), ("CX", 0, 1)), W2,
                    "Unchanged: SWAP needs 3 CX gates (the exact two-qubit table confirms no cheaper form).",
                    lines)
