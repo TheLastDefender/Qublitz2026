@@ -490,10 +490,56 @@ circuits per profile those differences are a few circuits, so all are kept.
   - **how:** Toffoli = H·CCZ·H, and CCZ is a phase polynomial over all 7 parities of 3 bits. Pipeline B rebuilds it with a different 6-CX network, and beam-search moves then slide phase gates into idle time slots. No single greedy pass finds this;
   - **T-depth** stays 4. Amy, Maslov, Mosca & Roetteler (2013) report a Toffoli with T-depth 3 and total depth 9 (from a figure caption; their full paper was not accessible here, so their depth model and CX count are unconfirmed). Ours matches their total depth, but not their T-depth. Our cost does not count T-depth, so it is not targeted. This reproduces a known result; it is not a new one.
 
-**Comparison with Qiskit** (`python compare_qiskit.py`, Qiskit 2.6.2, same
-corpus). Qiskit is credited per circuit with the cheapest valid result among
-its optimization levels 0–3 and the unchanged input. All of its outputs were
-checked with the organizers' equivalence function, and all were equivalent:
+**Standard benchmark circuits, against PyZX, Qiskit and published results**
+(`python benchmarks/compare_standard.py`; needs `pip install pyzx qiskit`).
+Of the standard benchmark suite, exactly four distinct inputs fit the
+challenge (≤ 6 qubits, exact Clifford+T): `tof_3`, `barenco_tof_3`, `mod5_4`
+and `qft_4`, all on 5 qubits; every other one needs more qubits
+(`--scan` lists them; files and sources in `benchmarks/circuits/`). For each
+circuit and weight profile, PyZX 0.10.8 is credited with the cheaper of its two
+strategies, Qiskit 2.6.2 with the cheapest of its levels 0–3, and "published"
+with the cheapest of the optimized versions distributed with PyZX: Nam et al.
+2018 (light and heavy), T-par, Feynman and PyZX's stored result. Each is also
+credited with the unchanged input, and every output from every source passed
+the organizers' equivalence check.
+
+| Circuit (input: gates, CX, T) | Weights | Input | PyZX | Qiskit | Published | Ours |
+|---|---|---|---|---|---|---|
+| tof_3 (45, 18, 21) | (1, 6, 0.2) | 141.2 | 141.2 | 140.2 | 110.8 | **106.0** |
+| | balanced | 76.0 | 76.0 | 75.0 | 64.0 | **61.0** |
+| | one-qubit | 27.0 | 26.0 | 26.0 | **21.0** | 23.0 |
+| | depth | 31.0 | 31.0 | 31.0 | 29.0 | **26.0** |
+| barenco_tof_3 (58, 24, 28) | (1, 6, 0.2) | 186.4 | 186.4 | 184.4 | 137.4 | **126.8** |
+| | balanced | 100.0 | 100.0 | 98.0 | 77.0 | **74.0** |
+| | one-qubit | 34.0 | 34.0 | 32.0 | **22.0** | 24.0 |
+| | depth | 42.0 | 42.0 | 42.0 | 37.0 | **33.0** |
+| mod5_4 (63, 28, 28) | (1, 6, 0.2) | 212.6 | 106.8 | 209.6 | 187.8 | **94.6** |
+| | balanced | 111.0 | 52.0 | 108.0 | 93.0 | **44.0** |
+| | one-qubit | 35.0 | **16.0** | 32.0 | 23.0 | 17.0 |
+| | depth | 48.0 | 19.0 | 48.0 | 44.0 | **13.0** |
+| qft_4 (179, 46, 69) | (1, 6, 0.2) | 438.2 | 438.2 | 438.2 | 436.2 | **373.6** |
+| | balanced | 325.0 | 325.0 | 325.0 | 325.0 | **282.0** |
+| | one-qubit | 133.0 | 133.0 | 133.0 | 127.0 | **115.0** |
+| | depth | 146.0 | 146.0 | 146.0 | 146.0 | **119.0** |
+
+- **Result:** ours is strictly cheapest against Qiskit in 16 of 16 cases,
+  against PyZX in 15 of 16, and against the best published version in 14 of 16.
+  The exceptions are all one-qubit-only weights: Nam et al. and Feynman on
+  `tof_3` and `barenco_tof_3`, and PyZX on `mod5_4`.
+- **In standard measures** (our output under (1, 6, 0.2)): CX 13, 16, 13 and
+  39, against the best published 14, 18, 26 and 45 (PyZX run live reaches 14
+  on `mod5_4`); T-count 15, 16, 8 and 67, equal to the best of any source; we
+  do not target T at all.
+- **Speed:** PyZX and Qiskit take well under a second per circuit; we take
+  1–4 s on the three Toffoli-based circuits and 17–30 s on the 179-gate `qft_4`,
+  three times the size of our own benchmark circuits.
+
+**Comparison with Qiskit on our own benchmark** (`python compare_qiskit.py`,
+the 35-circuit corpus above, which was also used during development to tune
+the depth rule, the beam width and the fifth candidate). Qiskit is credited per
+circuit with the cheapest valid result among its optimization levels 0–3 and
+the unchanged input. All of its outputs were checked with the organizers'
+equivalence function, and all were equivalent:
 
 | Weights | Input | Qiskit (best per circuit) | Ours | Ours / Qiskit |
 |---|---|---|---|---|
@@ -510,8 +556,9 @@ checked with the organizers' equivalence function, and all were equivalent:
   in this gate set.
 - **Speed:** Qiskit is far faster (about 0.5 s for all 35 circuits) and does
   not take our cost weights into account.
-- **Caveat:** this compares against Qiskit's general-purpose transpiler, not
-  against a Clifford+T-specialized optimizer.
+- **Caveat:** this compares against Qiskit's general-purpose transpiler; the
+  standard-circuit table above adds a Clifford+T specialist (PyZX) and
+  published results.
 
 **Runtime:** median about 0.3–0.5 s per circuit (up to 60 gates, 6 qubits;
 0.27–0.55 s depending on the weight profile), and up to about 3–4.5 s on the
@@ -598,7 +645,9 @@ the tests. Two tests were added after mutants initially survived.
 | `ALGORITHMS.md` | Precise reference: pseudocode, parameters, heuristics and the reason for each choice |
 | `stage2_baseline.py` | Frozen Stage 1–2 optimizer, the reference for tests and benchmarks. Not submitted. |
 | `report.py` -> `REPORT.md` | The results report: example circuits for every level shown before and after, with equivalence checks, resources, weight comparisons, corpus results and runtime scaling. Regenerate with `python report.py`. |
-| `compare_qiskit.py` | Optional comparison with Qiskit's transpiler (needs `pip install qiskit`) |
+| `compare_qiskit.py` | Optional comparison with Qiskit's transpiler on our corpus (needs `pip install qiskit`) |
+| `benchmarks/compare_standard.py` | Optional comparison with PyZX, Qiskit and published results on the standard benchmark circuits (needs `pip install pyzx qiskit`) |
+| `benchmarks/circuits/` | The standard benchmark circuits and published optimized versions, copied from PyZX (Apache-2.0), with sources |
 | `bench.py` | Benchmark, optimality-gap and ablation harness |
 | `test_stage1.py`, `test_stage2.py` | Tests from Stages 1–2, phrased as goal checks (equivalence, cost under the given weights); run against either module |
 | `test_stage4.py` | Tests of every component of the full optimizer |
@@ -617,6 +666,7 @@ and `stage2_baseline.py`).
 - NumPy: C. R. Harris et al., "Array programming with NumPy", *Nature* 585, 357–362 (2020). doi:10.1038/s41586-020-2649-2.
 - pytest: tests only.
 - Qiskit (optional, comparison script only, not used by the optimizer): Qiskit contributors, *Qiskit: An Open-source Framework for Quantum Computing*, https://github.com/Qiskit/qiskit.
+- PyZX (optional, comparison script only, not used by the optimizer): A. Kissinger, J. van de Wetering, "PyZX: Large Scale Automated Diagrammatic Reasoning," *EPTCS* 318, 229–241 (2020), [doi:10.4204/EPTCS.318.14](https://doi.org/10.4204/EPTCS.318.14); https://github.com/zxcalc/pyzx. The standard benchmark circuits in `benchmarks/circuits/` are copied from its repository (Apache License 2.0).
 
 **AI assistance.** This project was developed with Claude (Anthropic), used
 through Claude Code. Claude:
