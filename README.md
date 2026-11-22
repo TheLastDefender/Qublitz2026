@@ -585,6 +585,11 @@ The development history, with per-step measurements, is in `docs/`
   table.
 - **Depth is optimized indirectly** (placement, parity trees, commuting
   swaps). A dedicated depth scheduler is future work.
+- **Runtime grows with circuit size.** Under a second on most circuits up
+  to 60 gates (§8, `REPORT.md`), but 17–30 s on the 179-gate `qft_4`
+  (`python benchmarks/compare_standard.py`). The beam evaluates every move on
+  every state, so each step costs roughly gates × moves; `beam_width=0`
+  (greedy only) is faster but 6–12% costlier on our corpus (ablation, §8).
 - **Some rules were tuned on our benchmark corpus** (the depth rule, the beam
   width). They may be suboptimal for very different inputs, though the
   "never worse" guarantee always holds.
@@ -673,16 +678,7 @@ and `stage2_baseline.py`).
 - PyZX (optional, comparison script only, not used by the optimizer): A. Kissinger, J. van de Wetering, "PyZX: Large Scale Automated Diagrammatic Reasoning," *EPTCS* 318, 229–241 (2020), [doi:10.4204/EPTCS.318.14](https://doi.org/10.4204/EPTCS.318.14); https://github.com/zxcalc/pyzx. The standard benchmark circuits in `benchmarks/circuits/` are copied from its repository (Apache License 2.0).
 
 **AI assistance.** This project was developed with Claude (Anthropic), used
-through Claude Code. Claude:
-- researched and verified identities and citations;
-- proposed the designs;
-- wrote the implementation, tests and documentation;
-- ran the measurements.
-
-The team specified each stage's goals and constraints (exactness,
-determinism, cost-awareness, "no loss" rules for changes), reviewed the
-designs and results, and directed every decision recorded in §7 and in
-`docs/`.
+through Claude Code. Claude assisted with algorithm research, improvement brainstorming, implementation, and testing/verification of code.
 
 **Published work** (verified bibliographic details; DOIs checked 22 November 2026). Journal DOIs where one exists; arXiv DOIs for preprints without a journal version, and for the two *Quantum Inf. Comput.* papers, whose journal DOI could not be confirmed:
 - Y. Nam, N. J. Ross, Y. Su, A. M. Childs, D. Maslov, "Automated optimization of large quantum circuits with continuous parameters," *npj Quantum Information* **4**, 23 (2018). [doi:10.1038/s41534-018-0072-4](https://doi.org/10.1038/s41534-018-0072-4); arXiv:1710.07345.
