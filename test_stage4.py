@@ -740,18 +740,6 @@ def test_F_phase_segment_pass():
         assert s4._fast_equivalent(s4._fast_unitary(n, g), n, out) and len(out) <= len(g)
 
 
-def test_F_legacy_path_reproduces_submission_stage2_exactly():
-    # The legacy Stage 2 result is always a candidate in _select, which is what
-    # makes "never worse than Stage 2" hold by construction.
-    import stage2_baseline as stage2_module
-    rng = random.Random(87)
-    for _ in range(150):
-        c = _random_circuit(rng)
-        n = c["n_qubits"]
-        legacy = s4._stage12(n, s4._as_pairs(c), legacy=True)
-        assert s4._from_pairs(n, legacy) == stage2_module.optimize(c, CFG)
-
-
 def test_F_segment_placement_does_not_raise_depth():
     # T on wire 0 around CX controls: placing the merged phase first would add
     # depth by delaying both CX gates. Depth-aware placement avoids that.

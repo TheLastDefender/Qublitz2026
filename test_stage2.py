@@ -9,9 +9,6 @@ import random
 import pytest
 
 from submission import (
-    _seq_matrix,
-    _unitary_key,
-    _window_table,
     _commutes,
     _stage1_cancel,
     circuit_cost,
@@ -78,10 +75,6 @@ def test_non_commutation_rules_hold(a, b):
 # --------------------------------------------------------------------------
 # Single-wire windows: validity and table quality.
 # --------------------------------------------------------------------------
-def _key(seq):
-    return _unitary_key(_seq_matrix(seq))
-
-
 SANDWICHES = {
     ("H", "X", "H"): ["Z"],
     ("H", "Z", "H"): ["X"],
@@ -92,22 +85,21 @@ SANDWICHES = {
 
 
 @pytest.mark.parametrize("seq,expected", SANDWICHES.items())
-def test_sandwich_table_entries(seq, expected):
-    assert _window_table()[_key(list(seq))] == expected
+def test_sandwich_identities(seq, expected):
+    out = optimize(circ(1, *[(g, 0) for g in seq]), CFG)
+    assert [op["gate"] for op in out["gates"]] == expected
 
 
-def test_window_table_entries_are_equivalent_and_not_longer():
-    """Every table entry must equal its key, and be no longer than the sequence
-    that produced it (checked with the official equivalence function)."""
-    table = _window_table()
+def test_one_qubit_runs_up_to_4_gates_are_equivalent_and_not_longer():
+    """Every one-qubit sequence of 1-4 gates: the output is equivalent (official
+    check) and no longer than the input."""
     from itertools import product
     singles = ["H", "X", "Z", "S", "SDG", "T", "TDG"]
     for length in range(1, 5):
         for seq in product(singles, repeat=length):
-            best = table[_key(list(seq))]
-            assert len(best) <= length
             c_in = circ(1, *[(g, 0) for g in seq])
-            c_out = circ(1, *[(g, 0) for g in best])
+            c_out = optimize(c_in, CFG)
+            assert len(c_out["gates"]) <= length
             assert equivalent_up_to_global_phase(c_in, c_out), seq
 
 

@@ -92,19 +92,28 @@ def print_rows(title, rows):
               f"{c / b if b else 1:7.3f} {med:9.3f} {mx:7.3f}")
 
 
+def _unitary_key(u):
+    """Hashable key for a unitary up to global phase (rounded floats; used only
+    for the brute-force optimum search below)."""
+    flat = u.flatten()
+    pivot = int(np.argmax(np.abs(flat) > 1e-9))
+    u = u / (flat[pivot] / abs(flat[pivot]))
+    return tuple(np.round(u.flatten(), 6).view(float).tolist())
+
+
 def optimality_gap(samples=3000, max_len=4):
     """Exact minimum gate count for 2-qubit unitaries reachable in <= max_len gates."""
     gates = ([(g, (q,)) for g in sorted(s4.SINGLE_QUBIT_GATES) for q in (0, 1)]
              + [("CX", (0, 1)), ("CX", (1, 0))])
     mats = {g: s4._full_gate_matrix(2, {"gate": g[0], "qubits": list(g[1])}) for g in gates}
-    best = {s4._unitary_key(np.eye(4, dtype=complex)): 0}
+    best = {_unitary_key(np.eye(4, dtype=complex)): 0}
     frontier = [np.eye(4, dtype=complex)]
     for length in range(1, max_len + 1):
         nxt = []
         for u in frontier:
             for g in gates:
                 v = mats[g] @ u
-                k = s4._unitary_key(v)
+                k = _unitary_key(v)
                 if k not in best:
                     best[k] = length
                     nxt.append(v)
@@ -114,7 +123,7 @@ def optimality_gap(samples=3000, max_len=4):
     gaps = Counter()
     for _ in range(samples):
         g = _rand(rng, 2, rng.randint(6, 16), sorted(s4.ALLOWED_GATES))
-        k = s4._unitary_key(s4._fast_unitary(2, g))
+        k = _unitary_key(s4._fast_unitary(2, g))
         if k in best:
             out = s4.optimize(s4._from_pairs(2, g), cfg)
             gaps[len(out["gates"]) - best[k]] += 1

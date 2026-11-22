@@ -84,14 +84,12 @@ def optimize(circuit, config, beam_width=None):
 
 
 def _select(n, reference, start, config, beam_width=None):
-    """One selection round: build candidates (legacy Stage 2, improved Stage 2,
-    Pipeline A, Pipeline B, B after A), fully optimize each, verify each
-    against the input unitary, keep the cheapest, then beam-search from it."""
-    legacy = _stage12(n, start, legacy=True)               # Stage 2 of stage2_baseline.py
-    s2 = _stage12(n, start)                                # improved Stages 1-2
-    candidates = [start, legacy, s2]
+    """One selection round: build candidates (the round's input, Pipeline A,
+    Pipeline B, B after A), verify each against the input unitary, keep the
+    cheapest, then beam-search from it."""
+    s2 = _stage12(n, start)                                # Stages 1-2 cleanup
     a = _full_optimize(n, s2, config)                      # Pipeline A
-    candidates.append(a)
+    candidates = [start, a]
     if FEATURES["pipeline_b"]:
         candidates.append(_full_optimize(n, _pipeline_b(n, s2), config))  # B
         candidates.append(_full_optimize(n, _pipeline_b(n, a), config))   # B after A
@@ -120,16 +118,15 @@ def _select(n, reference, start, config, beam_width=None):
     return best
 
 
-def _stage12(n, gates, legacy=False):
-    """Stages 1-2 iterated to a fixed point. With legacy=True this is exactly
-    the Stage 2 `optimize` of stage2_baseline.py; otherwise the improved Stage 2.
+def _stage12(n, gates):
+    """Stages 1-2 iterated to a fixed point.
 
     Terminates: Stage 2 returns its input unchanged unless it found a strictly
     shorter circuit, and Stage 1 never lengthens, so each round removes a gate.
     """
     gates = _as_pairs(_stage1_cancel(_from_pairs(n, gates)))
     while True:
-        reduced = _stage2_reduce(gates, legacy)
+        reduced = _stage2_reduce(gates)
         if reduced == gates:
             return gates
         gates = _as_pairs(_stage1_cancel(_from_pairs(n, reduced)))
@@ -266,52 +263,10 @@ def _stage1_cancel(circuit):
 #     replaced by its shortest equivalent (_best_run): exact table lookup for
 #     operators needing <= 7 gates, otherwise a best split, also tried on the
 #     Matsumoto-Amano normal form. This covers sandwiches like H X H -> Z.
-# The LEGACY path (legacy=True) instead uses pairwise phase merging and greedy
-# 2-4 gate windows, reproducing stage2_baseline.py exactly.
 #
 # Termination: every accepted rewrite strictly lowers the gate count.
 
 _SINGLE_NAMES = sorted(SINGLE_QUBIT_GATES)
-
-
-def _unitary_key(u):
-    """Hashable key for a 2x2 or 4x4 unitary, normalized to remove global phase."""
-    flat = u.flatten()
-    pivot = int(np.argmax(np.abs(flat) > 1e-9))
-    u = u / (flat[pivot] / abs(flat[pivot]))
-    return tuple(np.round(u.flatten(), 6).view(float).tolist())
-
-
-def _build_window_table(max_len=4):
-    """Shortest one-qubit gate list for each unitary class, lengths 0..max_len."""
-    table = {_unitary_key(np.eye(2, dtype=complex)): []}
-    frontier = [[]]
-    for _ in range(max_len):
-        next_frontier = []
-        for seq in frontier:
-            for name in _SINGLE_NAMES:
-                new_seq = seq + [name]
-                key = _unitary_key(_seq_matrix(new_seq))
-                if key not in table:
-                    table[key] = new_seq
-                    next_frontier.append(new_seq)
-        frontier = next_frontier
-    return table
-
-
-def _seq_matrix(names):
-    """Product matrix for a sequence of one-qubit gate names (first acts first)."""
-    u = np.eye(2, dtype=complex)
-    for name in names:
-        u = _ONE_QUBIT_MATRICES[name] @ u
-    return u
-
-
-@functools.lru_cache(maxsize=None)
-def _window_table():
-    """4-gate one-qubit table (float keys), used only by the LEGACY Stage 2
-    path so that it reproduces stage2_baseline.py exactly. Built on first use."""
-    return _build_window_table(4)
 
 
 @functools.lru_cache(maxsize=None)
@@ -334,11 +289,7 @@ def _commute_relabelled(name_a, qubits_a, name_b, qubits_b, m):
     return bool(np.allclose(ua @ ub, ub @ ua, atol=1e-9, rtol=0.0))
 
 
-def _is_phase(name):
-    return name in _PHASE_K
-
-
-def _commute_cancel_pass(gates, pairwise_phase=False):
+def _commute_cancel_pass(gates):
     """One sweep: each gate looks forward for a partner it can reach.
 
     Returns a new list. Only ever shorter or equal in length.
@@ -361,21 +312,7 @@ def _commute_cancel_pass(gates, pairwise_phase=False):
                 alive[i] = alive[j] = False
                 changed = True
                 break
-            # Phase merging is normally done by _phase_segment_pass (whole
-            # segment at once). The LEGACY path keeps the pairwise merge of
-            # stage2_baseline.py so its result can be reproduced exactly.
-            if (pairwise_phase and _is_phase(gi[0]) and _is_phase(gj[0])
-                    and gi[1] == gj[1]):
-                k = (_PHASE_K[gi[0]] + _PHASE_K[gj[0]]) % 8
-                out = _PHASE_OUT[k]
-                if len(out) <= 1:  # only merge when it strictly shortens
-                    alive[i] = False
-                    changed = True
-                    if out:
-                        cur[j] = (out[0], gj[1])
-                    else:
-                        alive[j] = False
-                    break
+            # (Phase gates are merged by _phase_segment_pass, not here.)
             # Otherwise gj is a blocker unless it commutes with gi.
             if not _commutes(gi, gj):
                 break
@@ -601,7 +538,7 @@ def _window_pass(gates):
 
 
 def _phase_segment_pass(gates):
-    """Sum each wire's phase segments in one go (replaces pairwise merging).
+    """Sum each wire's phase segments in one go.
 
     On wire q, a phase gate commutes with everything on q except H(q), X(q)
     and a CX TARGETING q. Between two such blockers every phase gate on q can
@@ -634,62 +571,20 @@ def _phase_segment_pass(gates):
     return list(gates), False
 
 
-def _window_pass_greedy(gates):
-    """LEGACY (exactly as in stage2_baseline.py): first improvable 2-4 gate window."""
-    n_gates = len(gates)
-    for q in sorted({w for _, qs in gates for w in qs}):
-        positions = [k for k in range(n_gates) if q in gates[k][1]]
-        # Walk maximal runs of single-qubit gates on this wire.
-        run = []
-        runs = []
-        for k in positions:
-            name, qs = gates[k]
-            if len(qs) == 1:
-                run.append(k)
-            else:
-                if run:
-                    runs.append(run)
-                run = []
-        if run:
-            runs.append(run)
-        for run in runs:
-            for length in (4, 3, 2):
-                for s in range(len(run) - length + 1):
-                    window = run[s:s + length]
-                    seq = [gates[k][0] for k in window]
-                    best = _window_table()[_unitary_key(_seq_matrix(seq))]
-                    if len(best) < length:
-                        new = [(name, (q,)) for name in best]
-                        at = window[0]
-                        out = []
-                        for k in range(n_gates):
-                            if k == at:
-                                out.extend(new)
-                            elif k not in window:
-                                out.append(gates[k])
-                        return out, True
-    return list(gates), False
-
-
-def _stage2_reduce(gates, legacy=False):
-    """Commutation cancellation, phase segments and windows until nothing shortens.
-
-    legacy=True reproduces the Stage 2 of stage2_baseline.py exactly (pairwise
-    phase merging, greedy 2-4 gate windows). Its result is always one of the
-    candidates in _select, so "never worse than Stage 2" holds by construction.
-    """
+def _stage2_reduce(gates):
+    """Phase segments, commutation cancellation and one-qubit runs, until
+    nothing shortens."""
     gates = list(gates)
     while True:
-        if not legacy:
-            shorter, changed = _phase_segment_pass(gates)
-            if changed:
-                gates = shorter
-                continue
-        shorter = _commute_cancel_pass(gates, pairwise_phase=legacy)
+        shorter, changed = _phase_segment_pass(gates)
+        if changed:
+            gates = shorter
+            continue
+        shorter = _commute_cancel_pass(gates)
         if len(shorter) < len(gates):
             gates = shorter
             continue
-        shorter, changed = (_window_pass_greedy if legacy else _window_pass)(gates)
+        shorter, changed = _window_pass(gates)
         if changed and len(shorter) < len(gates):
             gates = shorter
             continue
@@ -706,7 +601,7 @@ def _stage2_reduce(gates, legacy=False):
 # synthesis, phase folding, Pauli tableaux and the one-qubit tables use exact
 # integers (GF(2) bitmasks, exponents mod 8, Pauli bits + sign, Z[1/sqrt2]).
 # Floats are used only where a matrix is compared: the cached commutation
-# test, the legacy 4-gate window table, and unitary verification.
+# test and unitary verification.
 #
 # Exactness: every rewrite is an identity up to global phase. Region rewrites
 # are checked exactly with `_region_canon` (integer arithmetic, proven iff);
