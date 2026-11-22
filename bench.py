@@ -69,6 +69,10 @@ def corpus(per_kind):
 
 
 def evaluate(circuits):
+    """Mean costs and runtimes per profile. The two-qubit Clifford table is
+    built before timing (a one-time cost per process, reported separately)."""
+    s4._cliff2_table()
+    s4._z_basis_changers()
     rows = {}
     for pname, cfg in PROFILES.items():
         tin = t2 = t4 = 0.0
@@ -83,17 +87,19 @@ def evaluate(circuits):
             t4 += s4.circuit_cost(out, cfg)
         k = len(circuits)
         secs.sort()
-        rows[pname] = (tin / k, t2 / k, t4 / k, secs[len(secs) // 2], secs[-1])
+        rows[pname] = (tin / k, t2 / k, t4 / k, sum(secs) / k, secs[len(secs) // 2], secs[-1])
     return rows
 
 
 def print_rows(title, rows):
     print(f"\n{title}")
     print(f"{'profile':22s} {'input':>8s} {'stage2':>8s} {'stage4':>8s} {'s4/in':>7s} "
-          f"{'s4/s2':>7s} {'median s':>9s} {'max s':>7s}")
-    for p, (a, b, c, med, mx) in rows.items():
+          f"{'s4/s2':>7s} {'mean s':>7s} {'median s':>9s} {'max s':>7s}")
+    for p, (a, b, c, mean, med, mx) in rows.items():
         print(f"{p:22s} {a:8.2f} {b:8.2f} {c:8.2f} {c / a if a else 1:7.3f} "
-              f"{c / b if b else 1:7.3f} {med:9.3f} {mx:7.3f}")
+              f"{c / b if b else 1:7.3f} {mean:7.3f} {med:9.3f} {mx:7.3f}")
+    total = sum(r[3] for r in rows.values()) / len(rows)
+    print(f"{'mean over all profiles':22s} {'':44s} {total:7.3f}")
 
 
 def _unitary_key(u):
@@ -238,6 +244,9 @@ def optimality_gap_3q(samples=400, at_five=200, max_len=4):
 
 def main():
     quick = "--quick" in sys.argv
+    start = time.perf_counter()
+    s4._cliff2_table()
+    print(f"two-qubit Clifford table built in {time.perf_counter() - start:.2f} s (once per process)")
     circuits = corpus(8 if quick else 20)
     print(f"corpus: {len(circuits)} circuits")
     print_rows("All features on", evaluate(circuits))

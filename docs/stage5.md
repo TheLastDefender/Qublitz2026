@@ -34,7 +34,9 @@ of the input.
 - **Later update (caching, after Stage 6):** caching region and T-block
   rebuilds left all outputs identical and brought the median to 0.27–0.55 s
   and the maximum to about 3–4.5 s (re-measured after the fifth candidate was
-  added); see README §8.
+  added). Latest `python bench.py --quick` run (2026-11-22, table built
+  before timing): mean 0.68 s (0.56–0.88 s per profile), median 0.29–0.61 s,
+  maximum 3.4–4.9 s; see README §8.
 - **Budget:** the beam's evaluation budget was never reached. Every search
   stopped because it ran out of improvements.
 

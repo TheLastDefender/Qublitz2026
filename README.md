@@ -81,7 +81,7 @@ guidelines (*SubmissionGuidelineCircuits.pdf*).
 | Level 2: hidden redundancies (commutation, CX Z₀ CX = Z₀) | Stage 2, §4.4 |
 | Level 3: a general compiler (repeated rewriting, larger patterns, combined methods, heuristics) | Regions, phase folding, exact 2-qubit blocks, Pauli rotations, beam search: §4.5–§4.10 |
 | Level 4: changing resource weights | Cost-aware selection everywhere, Pareto tables, depth moves that follow `wd`: §4.11 |
-| Reliability and runtime are considered | Deterministic, never worse than the input; about 0.3–0.5 s median per circuit (§8) |
+| Reliability and runtime are considered | Deterministic, never worse than the input; mean about 0.7 s per circuit (§8) |
 | Attribution of external code, algorithms, libraries and AI | §6 and §12 |
 
 ---
@@ -558,10 +558,12 @@ or the unchanged input. All outputs passed the organizers' equivalence check.
 - **Speed:** both tools are far faster (Qiskit about 0.5 s for all 35
   circuits) and neither takes our cost weights into account.
 
-**Runtime:** median about 0.3–0.5 s per circuit (up to 60 gates, 6 qubits;
-0.27–0.55 s depending on the weight profile), and up to about 3–4.5 s on the
-largest benchmark circuits. Add about 1.7–1.8 s for the Clifford table on the
-first multi-qubit call in a process. Cost grows roughly linearly with
+**Runtime** (`python bench.py --quick`, 35 circuits × 4 profiles, up to 60
+gates and 6 qubits): mean 0.68 s per circuit (0.56–0.88 s depending on the
+weight profile), median 0.29–0.61 s, and up to about 3.4–4.9 s on the largest
+benchmark circuits. Add about 1.7–1.8 s for the Clifford table on the first
+multi-qubit call in a process (built before timing; the script prints it
+separately). Cost grows roughly linearly with
 beam width, and with gates × moves per beam step.
 
 The development history, with per-step measurements, is in `docs/`
@@ -611,7 +613,7 @@ only the seconds vary.
 
 | Numbers | Command | Section |
 |---|---|---|
-| corpus results vs input and Stage 2 baseline; runtime per call | `python bench.py --quick` | §8 |
+| corpus results vs input and Stage 2 baseline; runtime per call (mean, median, max) and Clifford-table build time | `python bench.py --quick` | §8 |
 | 2- and 3-qubit optimality (1037/1039, 400/400, 222/222, 200/200) | `python bench.py --quick --optimality` | §8 |
 | what each step contributes | `python bench.py --quick --ablation` | §8 |
 | example circuits, corpus table, runtime by size (`REPORT.md`) | `python report.py` | §8 |
