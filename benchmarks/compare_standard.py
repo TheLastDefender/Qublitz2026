@@ -170,6 +170,7 @@ def compare():
     directory = os.path.join(HERE, "circuits")
     wins = {"PyZX": 0, "Qiskit": 0, "published": 0}
     ties = {"published": 0}
+    savings = {"PyZX": [], "Qiskit": [], "published": []}
     cases = 0
     for name in CIRCUITS:
         path = os.path.join(directory, name)
@@ -201,6 +202,8 @@ def compare():
             cases += 1
             wins["PyZX"] += ours < best_pz - 1e-12
             wins["Qiskit"] += ours < best_qk - 1e-12
+            for tool, best in (("PyZX", best_pz), ("Qiskit", best_qk), ("published", best_pub)):
+                savings[tool].append(100 * (best - ours) / best)
             wins["published"] += ours < best_pub - 1e-12
             ties["published"] += abs(ours - best_pub) <= 1e-12
             print(f"   {profile:20s} {base:8.1f} {best_pz:10.1f} {best_qk:12.1f} {best_pub:15.1f} {ours:8.1f}   "
@@ -208,6 +211,8 @@ def compare():
     print(f"\nOurs strictly cheapest: vs PyZX in {wins['PyZX']}/{cases} cases, "
           f"vs Qiskit in {wins['Qiskit']}/{cases} cases, vs the published versions in benchmarks/circuits in "
           f"{wins['published']}/{cases} cases (tied in {ties['published']}).")
+    print("Average saving per circuit-and-weight case: " + ", ".join(
+        f"vs {t} {sum(v) / len(v):.1f}%" for t, v in savings.items()))
 
 
 if __name__ == "__main__":

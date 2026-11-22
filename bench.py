@@ -1,8 +1,10 @@
 """Benchmark + ablation harness for submission.py (not used by optimize).
 
-Run:  python bench.py            (full corpus)
-      python bench.py --quick    (smaller corpus)
-      python bench.py --ablation (also switch each feature off in turn)
+Run:  python bench.py                 (larger corpus: 20 circuits per kind)
+      python bench.py --quick         (the 35-circuit corpus used in README and REPORT)
+      python bench.py --optimality    (also the 2- and 3-qubit optimality checks)
+      python bench.py --ablation      (also remove each step in turn)
+Flags combine, e.g.  python bench.py --quick --optimality --ablation
 
 Reports, per weight profile, the mean cost of input / Stage 2 / Stage 4 and
 the runtime, plus the gap to the exact optimum on small 2- and 3-qubit
@@ -239,8 +241,8 @@ def main():
     circuits = corpus(8 if quick else 20)
     print(f"corpus: {len(circuits)} circuits")
     print_rows("All features on", evaluate(circuits))
-    optimality_gap(1500 if quick else 3000)
-    if not quick:
+    if "--optimality" in sys.argv:
+        optimality_gap(3000)
         optimality_gap_3q()
     if "--ablation" in sys.argv:
         for step in ABLATION_STEPS:

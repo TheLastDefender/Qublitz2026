@@ -449,7 +449,7 @@ baseline:
 | depth only (0, 0, 1) | 0.380 | 0.602 |
 
 **Optimality on small circuits** (exhaustive search for the true minimum;
-gate-count weights; `bench.optimality_gap` and `bench.optimality_gap_3q`):
+gate-count weights; `python bench.py --quick --optimality`):
 
 | Circuits | Exactly optimal |
 |---|---|
@@ -524,7 +524,7 @@ the organizers' equivalence check.
 
 - **Result:** ours is strictly cheapest against Qiskit in 16 of 16 cases,
   against PyZX in 15 of 16, and against the published versions listed above in
-  14 of 16. The exceptions are all one-qubit-only weights: Nam et al. and
+  14 of 16. Average saving per case: 29.2% against Qiskit, 18.3% against PyZX. The exceptions are all one-qubit-only weights: Nam et al. and
   Feynman on `tof_3` and `barenco_tof_3`, and PyZX on `mod5_4`.
 - **In standard measures** (our output under (1, 6, 0.2)): CX 13, 16, 13 and
   39, against 14, 18, 26 and 45 for the best of those published versions
@@ -539,31 +539,33 @@ the organizers' equivalence check.
   1–4 s on the three Toffoli-based circuits and 17–30 s on the 179-gate `qft_4`,
   three times the size of our own benchmark circuits.
 
-**Comparison with Qiskit on our own benchmark** (`python compare_qiskit.py`,
-the 35-circuit corpus above, which was also used during development to tune
-the depth rule, the beam width and the fifth candidate). Qiskit is credited per
-circuit with the cheapest valid result among its optimization levels 0–3 and
-the unchanged input. All of its outputs were checked with the organizers'
-equivalence function, and all were equivalent:
+**Comparison with Qiskit and PyZX on our own benchmark** (`python
+compare_qiskit.py`; PyZX is included when installed). This is the 35-circuit
+corpus above, which was also used during development to tune the depth rule,
+the beam width and the fifth candidate, so it is breadth evidence; the
+standard circuits above are the headline. Each tool is credited per circuit
+with the cheapest valid result (Qiskit: levels 0–3; PyZX: its two strategies)
+or the unchanged input. All outputs passed the organizers' equivalence check.
 
-| Weights | Input | Qiskit (best per circuit) | Ours | Ours / Qiskit |
-|---|---|---|---|---|
-| CX-heavy (1, 6, 0.2) | 87.90 | 58.29 | 39.75 | 0.682 |
-| balanced (1, 1, 1) | 54.06 | 34.03 | 22.97 | 0.675 |
-| one-qubit only (1, 0, 0) | 23.66 | 14.34 | 9.37 | 0.653 |
-| depth only (0, 0, 1) | 20.37 | 12.71 | 7.74 | 0.609 |
+| Weights | Input | Qiskit (best) | PyZX (best) | Ours | Ours / Qiskit | Ours / PyZX |
+|---|---|---|---|---|---|---|
+| CX-heavy (1, 6, 0.2) | 87.90 | 58.29 | 49.88 | 39.75 | 0.682 | 0.797 |
+| balanced (1, 1, 1) | 54.06 | 34.03 | 29.20 | 22.97 | 0.675 | 0.787 |
+| one-qubit only (1, 0, 0) | 23.66 | 14.34 | 11.77 | 9.37 | 0.653 | 0.796 |
+| depth only (0, 0, 1) | 20.37 | 12.71 | 10.86 | 7.74 | 0.609 | 0.713 |
 
-- **Result:** ours is cheaper on 30–33 of the 35 circuits per profile and
-  never costlier; the rest are ties.
+- **Average saving per circuit** (mean over cases of (tool − ours) / tool):
+  30.7% against Qiskit and 18.4% against PyZX over all 140 cases; 30.3% and
+  19.3% over the 32 random circuits (128 cases).
+- **Never costlier than Qiskit** (cheaper in 126 of 140, the rest ties).
+  Against PyZX: cheaper in 102, costlier in 1 (a 2-qubit, 60-gate CX-heavy
+  circuit under (1, 6, 0.2): 66.2 against 56.4).
 - **Qiskit's levels:** its level 1 (cancellation and commutation) was its best
   single level. Levels 2–3 resynthesize blocks into arbitrary rotations and
   then rebuild them from H, S and T, which made circuits about 3× *costlier*
   in this gate set.
-- **Speed:** Qiskit is far faster (about 0.5 s for all 35 circuits) and does
-  not take our cost weights into account.
-- **Caveat:** this compares against Qiskit's general-purpose transpiler; the
-  standard-circuit table above adds a Clifford+T specialist (PyZX) and
-  published results.
+- **Speed:** both tools are far faster (Qiskit about 0.5 s for all 35
+  circuits) and neither takes our cost weights into account.
 
 **Runtime:** median about 0.3–0.5 s per circuit (up to 60 gates, 6 qubits;
 0.27–0.55 s depending on the weight profile), and up to about 3–4.5 s on the
@@ -612,18 +614,22 @@ SUBMISSION_MODULE=stage2_baseline python -m pytest test_stage1.py test_stage2.py
 
 That runs the same Stage 1/2 tests against the frozen baseline.
 
-```bash
-python bench.py --quick --ablation
-```
+**Reproducing every number in this README.** All runs are deterministic
+(fixed seeds, no time limits), so they print the same numbers on any machine;
+only the seconds vary.
 
-```bash
-python report.py
-```
+| Numbers | Command | Section |
+|---|---|---|
+| corpus results vs input and Stage 2 baseline; runtime per call | `python bench.py --quick` | §8 |
+| 2- and 3-qubit optimality (1037/1039, 400/400, 222/222, 200/200) | `python bench.py --quick --optimality` | §8 |
+| what each step contributes | `python bench.py --quick --ablation` | §8 |
+| example circuits, corpus table, runtime by size (`REPORT.md`) | `python report.py` | §8 |
+| Qiskit and PyZX on our corpus (table, average savings, cheaper/costlier counts) | `python compare_qiskit.py` | §8 |
+| PyZX, Qiskit and published results on the standard circuits | `python benchmarks/compare_standard.py` | §8 |
+| which standard circuits fit the challenge | `python benchmarks/compare_standard.py --scan <PyZX clone>/circuits` | §8 |
 
-The second command regenerates `REPORT.md`.
-
-That gives benchmark numbers, the small-circuit optimality gap, and each
-feature's contribution.
+The last three need `python -m pip install qiskit pyzx` (Qiskit 2.6.2 and
+PyZX 0.10.8 were used); the optimizer itself needs only NumPy.
 
 **What the tests check:**
 - every identity in §5;
