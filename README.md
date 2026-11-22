@@ -598,15 +598,15 @@ determinism, cost-awareness, "no loss" rules for changes), reviewed the
 designs and results, and directed every decision recorded in §7 and in
 `docs/`.
 
-**Published work** (verified bibliographic details):
-- Y. Nam, N. J. Ross, Y. Su, A. M. Childs, D. Maslov, "Automated optimization of large quantum circuits with continuous parameters," *npj Quantum Information* **4**, 23 (2018). arXiv:1710.07345.
-- M. Amy, D. Maslov, M. Mosca, "Polynomial-time T-depth optimization of Clifford+T circuits via matroid partitioning," *IEEE Trans. CAD* **33**(10), 1476–1489 (2014). arXiv:1303.2042.
-- M. Amy, P. Azimzadeh, M. Mosca, "On the CNOT-complexity of CNOT-PHASE circuits," arXiv:1712.01859 (2017, rev. 2018).
-- F. Zhang, J. Chen, "Optimizing T gates in Clifford+T circuit as π/4 rotations around Paulis," arXiv:1903.12456 (2019).
-- S. Aaronson, D. Gottesman, "Improved simulation of stabilizer circuits," *Phys. Rev. A* **70**, 052328 (2004). arXiv:quant-ph/0406196.
-- K. Matsumoto, K. Amano, "Representation of quantum circuits with Clifford and π/8 gates," arXiv:0806.3834 (2008).
-- B. Giles, P. Selinger, "Remarks on Matsumoto and Amano's normal form for single-qubit Clifford+T operators," arXiv:1312.6584 (2013).
-- B. T. Lowerre, "The HARPY speech recognition system," Ph.D. thesis, Carnegie Mellon University (1976).
-- D. Gosset, V. Kliuchnikov, M. Mosca, V. Russo, "An algorithm for the T-count," *Quantum Inf. Comput.* **14**, 1261–1276 (2014). arXiv:1308.4134.
-- V. V. Shende, I. L. Markov, "On the CNOT-cost of TOFFOLI gates," arXiv:0803.2316 (2008).
-- M. Amy, D. Maslov, M. Mosca, M. Roetteler, "A meet-in-the-middle algorithm for fast synthesis of depth-optimal quantum circuits," *IEEE Trans. CAD* **32**(6) (2013). arXiv:1206.0758.
+**Published work** (verified bibliographic details; DOIs checked 22 November 2026). Journal DOIs where one exists; arXiv DOIs for preprints without a journal version, and for the two *Quantum Inf. Comput.* papers, whose journal DOI could not be confirmed:
+- Y. Nam, N. J. Ross, Y. Su, A. M. Childs, D. Maslov, "Automated optimization of large quantum circuits with continuous parameters," *npj Quantum Information* **4**, 23 (2018). [doi:10.1038/s41534-018-0072-4](https://doi.org/10.1038/s41534-018-0072-4); arXiv:1710.07345.
+- M. Amy, D. Maslov, M. Mosca, "Polynomial-time T-depth optimization of Clifford+T circuits via matroid partitioning," *IEEE Trans. CAD* **33**(10), 1476–1489 (2014). [doi:10.1109/TCAD.2014.2341953](https://doi.org/10.1109/TCAD.2014.2341953); arXiv:1303.2042.
+- M. Amy, P. Azimzadeh, M. Mosca, "On the CNOT-complexity of CNOT-PHASE circuits," *Quantum Sci. Technol.* **4**(1), 015002 (2018). [doi:10.1088/2058-9565/aad8ca](https://doi.org/10.1088/2058-9565/aad8ca); arXiv:1712.01859.
+- F. Zhang, J. Chen, "Optimizing T gates in Clifford+T circuit as π/4 rotations around Paulis," arXiv:1903.12456 (2019). [doi:10.48550/arXiv.1903.12456](https://doi.org/10.48550/arXiv.1903.12456).
+- S. Aaronson, D. Gottesman, "Improved simulation of stabilizer circuits," *Phys. Rev. A* **70**, 052328 (2004). [doi:10.1103/PhysRevA.70.052328](https://doi.org/10.1103/PhysRevA.70.052328); arXiv:quant-ph/0406196.
+- K. Matsumoto, K. Amano, "Representation of quantum circuits with Clifford and π/8 gates," arXiv:0806.3834 (2008). [doi:10.48550/arXiv.0806.3834](https://doi.org/10.48550/arXiv.0806.3834).
+- B. Giles, P. Selinger, "Remarks on Matsumoto and Amano's normal form for single-qubit Clifford+T operators," arXiv:1312.6584 (2013). [doi:10.48550/arXiv.1312.6584](https://doi.org/10.48550/arXiv.1312.6584).
+- B. T. Lowerre, "The HARPY speech recognition system," Ph.D. thesis, Carnegie Mellon University (1976). (No DOI.)
+- D. Gosset, V. Kliuchnikov, M. Mosca, V. Russo, "An algorithm for the T-count," *Quantum Inf. Comput.* **14**, 1261–1276 (2014). arXiv:1308.4134, [doi:10.48550/arXiv.1308.4134](https://doi.org/10.48550/arXiv.1308.4134).
+- V. V. Shende, I. L. Markov, "On the CNOT-cost of TOFFOLI gates," *Quantum Inf. Comput.* **9**(5–6), 461–486 (2009). arXiv:0803.2316, [doi:10.48550/arXiv.0803.2316](https://doi.org/10.48550/arXiv.0803.2316).
+- M. Amy, D. Maslov, M. Mosca, M. Roetteler, "A meet-in-the-middle algorithm for fast synthesis of depth-optimal quantum circuits," *IEEE Trans. CAD* **32**(6), 818–830 (2013). [doi:10.1109/TCAD.2013.2244643](https://doi.org/10.1109/TCAD.2013.2244643); arXiv:1206.0758.
