@@ -1,4 +1,4 @@
-# Quantum Circuit Golf: Exact, Cost-Aware Circuit Optimizer (Qublitz 2026)
+# Quantum Circuit Golf: Circuit Optimizer
 
 `submission.py` exports `optimize(circuit, config)`, the interface the
 organizers import. Given a circuit over {H, X, Z, S, SDG, T, TDG, CX} on 1-6
